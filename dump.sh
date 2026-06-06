@@ -23,8 +23,10 @@ SERIAL="$TMP/serial.txt"
 MON="$TMP/monitor.sock"
 trap 'kill "$QPID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
 
-qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 -nographic \
-    -monitor "unix:$MON,server,nowait" \
+# Type `exit` into the shell so the user program terminates and the kernel
+# parks; that is the moment we snapshot.
+printf 'exit\r' | qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 \
+    -nographic -monitor "unix:$MON,server,nowait" \
     -kernel "$KERNEL" >"$SERIAL" 2>&1 &
 QPID=$!
 
