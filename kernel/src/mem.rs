@@ -1,10 +1,7 @@
 //! Freestanding implementations of the memory primitives the compiler may emit
 //! calls to (struct/slice copies, zero-init, `Vec` growth). Without `libc` or the
 //! `compiler_builtins` `mem` feature, these symbols are otherwise undefined.
-//!
-//! These are ordinary EL1 functions, not syscalls. They MUST use manual byte
-//! loops: `core::ptr::copy*` would lower back into `memcpy` and recurse forever.
-//! Do not remove or rename them.
+
 
 #[no_mangle]
 pub unsafe extern "C" fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8 {
