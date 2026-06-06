@@ -68,7 +68,8 @@ extern "C" fn exception_dispatch(kind: u64, frame: *mut TrapFrame) {
         0 => {
             let ec = (esr >> 26) & 0x3F;
             match ec {
-                EC_SVC => syscall::dispatch(frame),
+                // kind >= 8 means the SVC came from a lower EL (EL0 userspace).
+                EC_SVC => syscall::dispatch(frame, kind >= 8),
                 _ => report_and_halt(kind, esr, frame),
             }
         }

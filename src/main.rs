@@ -16,6 +16,7 @@ mod syscall;
 mod sync;
 mod timer;
 mod uart;
+mod user;
 
 global_asm!(include_str!("boot.s"));
 
@@ -42,9 +43,8 @@ pub extern "C" fn kmain() -> ! {
     enable_irqs();
     irq_self_check();
 
-    loop {
-        unsafe { core::arch::asm!("wfi") }
-    }
+    uart::write_str("entering user mode (EL0)...\n");
+    user::enter_user();
 }
 
 /// Exercise the global allocator. Panics (and so halts) if anything is wrong.

@@ -41,6 +41,16 @@ const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
 /// read/write, non-executable. (Type bits 0b11 = a valid page at L3.)
 pub const PAGE_KERNEL_RW: u64 = DESC_PAGE | SH_INNER | AF | UXN | PXN;
 
+/// Access permission: EL1 read/write, EL0 read/write.
+const AP_EL0_RW: u64 = 0b01 << 6;
+/// Access permission: EL1 read-only, EL0 read-only.
+const AP_EL0_RO: u64 = 0b11 << 6;
+
+/// L3 page flags for user read/write data (EL0 RW, non-executable).
+pub const PAGE_USER_RW: u64 = DESC_PAGE | AP_EL0_RW | SH_INNER | AF | UXN | PXN;
+/// L3 page flags for user code (EL0 read + execute; kernel cannot execute it).
+pub const PAGE_USER_RX: u64 = DESC_PAGE | AP_EL0_RO | SH_INNER | AF | PXN;
+
 // Identity-mapped physical layout.
 const RAM_BASE: usize = 0x4000_0000;
 const RAM_SIZE: usize = 128 * 1024 * 1024;
