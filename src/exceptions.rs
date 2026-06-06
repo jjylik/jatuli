@@ -1,13 +1,15 @@
-//! AArch64 exception vectors: install `VBAR_EL1` and report any exception.
+//! AArch64 exception vectors with a full trap frame.
 //!
-//! This phase reports and halts: the handler decodes ESR/ELR/FAR/SPSR, prints a
-//! diagnostic, and parks the CPU. No general registers are saved because the
-//! handler never returns. Full trap-frame save/restore (for syscalls and IRQs)
-//! comes in a later phase.
+//! The vector stubs (see `exceptions.s`) save every general register plus ELR
+//! and SPSR into a [`TrapFrame`] on the kernel stack, call [`exception_dispatch`],
+//! then restore and `ERET`. `SVC` is dispatched as a syscall (the handler may
+//! modify the frame — e.g. the return value — then resume). Real faults are
+//! reported and the CPU is halted.
 
 use core::arch::{asm, global_asm};
 
 use crate::kprintln;
+use crate::syscall;
 
 global_asm!(include_str!("exceptions.s"));
 
@@ -16,6 +18,22 @@ extern "C" {
     static exception_vector_table: u8;
 }
 
+/// Saved processor state on exception entry. Layout matches `exceptions.s`.
+#[repr(C)]
+pub struct TrapFrame {
+    /// General registers x0..x30.
+    pub x: [u64; 31],
+    /// Exception Link Register (the return address).
+    pub elr: u64,
+    /// Saved Program Status Register.
+    pub spsr: u64,
+    /// Padding to keep the frame 16-byte aligned.
+    pub _pad: u64,
+}
+
+/// Exception class (`ESR_EL1.EC`) for an AArch64 `SVC`.
+const EC_SVC: u64 = 0x15;
+
 /// Install the exception vector table. Call once, early in `kmain`, so any later
 /// fault produces a diagnostic instead of a silent hang.
 pub fn init_exceptions() {
@@ -23,6 +41,51 @@ pub fn init_exceptions() {
     // SAFETY: `vbar` is the address of the correctly 2 KiB-aligned vector table.
     unsafe {
         asm!("msr vbar_el1, {0}", "isb", in(reg) vbar, options(nostack, preserves_flags));
+    }
+}
+
+/// Read `ESR_EL1` (the exception syndrome register).
+fn read_esr() -> u64 {
+    let esr: u64;
+    // SAFETY: reading a system register has no memory effects.
+    unsafe { asm!("mrs {0}, esr_el1", out(reg) esr, options(nomem, nostack, preserves_flags)) };
+    esr
+}
+
+/// Common exception handler. Reached from every vector via `common_exception`;
+/// `kind` is the vector index and `frame` is the saved state (mutable, so a
+/// syscall can write its return value or a handler can adjust `elr`).
+#[no_mangle]
+extern "C" fn exception_dispatch(kind: u64, frame: *mut TrapFrame) {
+    // SAFETY: the asm stub passes a pointer to a valid TrapFrame on the stack.
+    let frame = unsafe { &mut *frame };
+    let esr = read_esr();
+    let ec = (esr >> 26) & 0x3F;
+
+    match ec {
+        EC_SVC => syscall::dispatch(frame),
+        _ => report_and_halt(kind, esr, frame),
+    }
+}
+
+/// Report an unexpected exception and halt (faults are not recoverable here).
+fn report_and_halt(kind: u64, esr: u64, frame: &TrapFrame) -> ! {
+    let ec = (esr >> 26) & 0x3F;
+    let far: u64;
+    // SAFETY: reading a system register has no memory effects.
+    unsafe { asm!("mrs {0}, far_el1", out(reg) far, options(nomem, nostack, preserves_flags)) };
+
+    kprintln!();
+    kprintln!("*** EXCEPTION (vector {}: {}) ***", kind, vector_name(kind));
+    kprintln!("  ESR_EL1  = {:#018x}  (EC = {:#04x}: {})", esr, ec, ec_name(ec));
+    kprintln!("  ELR_EL1  = {:#018x}", frame.elr);
+    kprintln!("  FAR_EL1  = {:#018x}", far);
+    kprintln!("  SPSR_EL1 = {:#018x}", frame.spsr);
+    kprintln!("halting.");
+
+    loop {
+        // SAFETY: `wfe` just waits for an event; no memory effects.
+        unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
     }
 }
 
@@ -48,37 +111,5 @@ fn vector_name(kind: u64) -> &'static str {
         4..=7 => "current EL, SPx",
         8..=11 => "lower EL, AArch64",
         _ => "lower EL, AArch32",
-    }
-}
-
-/// Common exception handler: decode, report, and halt. Reached from every vector
-/// entry via `common_exception` in `exceptions.s`; `kind` is the entry index.
-#[no_mangle]
-extern "C" fn exception_dispatch(kind: u64) -> ! {
-    let esr: u64;
-    let elr: u64;
-    let far: u64;
-    let spsr: u64;
-    // SAFETY: reading these system registers has no memory effects. Read them
-    // before any other work so they aren't clobbered by a later exception.
-    unsafe {
-        asm!("mrs {0}, esr_el1", out(reg) esr, options(nomem, nostack, preserves_flags));
-        asm!("mrs {0}, elr_el1", out(reg) elr, options(nomem, nostack, preserves_flags));
-        asm!("mrs {0}, far_el1", out(reg) far, options(nomem, nostack, preserves_flags));
-        asm!("mrs {0}, spsr_el1", out(reg) spsr, options(nomem, nostack, preserves_flags));
-    }
-    let ec = (esr >> 26) & 0x3F;
-
-    kprintln!();
-    kprintln!("*** EXCEPTION (vector {}: {}) ***", kind, vector_name(kind));
-    kprintln!("  ESR_EL1  = {:#018x}  (EC = {:#04x}: {})", esr, ec, ec_name(ec));
-    kprintln!("  ELR_EL1  = {:#018x}", elr);
-    kprintln!("  FAR_EL1  = {:#018x}", far);
-    kprintln!("  SPSR_EL1 = {:#018x}", spsr);
-    kprintln!("halting.");
-
-    loop {
-        // SAFETY: `wfe` just waits for an event; no memory effects.
-        unsafe { asm!("wfe", options(nomem, nostack, preserves_flags)) };
     }
 }

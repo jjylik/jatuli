@@ -14,7 +14,7 @@ kill "$QPID" 2>/dev/null || true
 wait "$QPID" 2>/dev/null || true
 
 fail=0
-for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "exception vectors installed" "EXCEPTION (vector 4" "data abort (same EL)"; do
+for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "Hello from a syscall!" "syscall self-check passed"; do
     if ! grep -q "$needle" "$OUT"; then
         echo "FAIL: expected '$needle' in serial output."
         fail=1
