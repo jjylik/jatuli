@@ -10,6 +10,7 @@ mod allocator;
 mod exceptions;
 mod frames;
 mod gic;
+mod irq;
 mod mem;
 mod mmu;
 mod sched;
@@ -41,7 +42,7 @@ pub extern "C" fn kmain() -> ! {
 
     gic::init(timer::TIMER_INTID);
     timer::init();
-    enable_irqs();
+    irq::enable();
     irq_self_check();
 
     sched_self_check();
@@ -170,13 +171,6 @@ unsafe fn syscall(num: u64, arg0: u64, arg1: u64) -> u64 {
     ret
 }
 
-/// Unmask IRQs (clear PSTATE.I). Call only once the vector table, GIC, and timer
-/// are configured.
-fn enable_irqs() {
-    // SAFETY: enabling IRQ delivery now that handlers and the GIC are ready.
-    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)) };
-}
-
 /// Prove the interrupt path works: sleep on `wfi` until the timer has fired
 /// several times (each IRQ wakes the CPU), then report.
 fn irq_self_check() {
@@ -188,27 +182,45 @@ fn irq_self_check() {
     uart::write_str("irq self-check passed\n");
 }
 
-/// Spawn three kernel threads that round-robin via cooperative yield, printing
-/// their letter; the deterministic output proves context switching works.
+/// Spawn a blocking thread and a CPU-bound thread to exercise sleep and
+/// preemption; `kmain` idles until both exit.
 fn sched_self_check() {
     sched::init();
-    sched::spawn(worker, b'A' as usize);
-    sched::spawn(worker, b'B' as usize);
-    sched::spawn(worker, b'C' as usize);
+    sched::spawn(sleeper, 0);
+    sched::spawn(busy, 0);
 
-    // kmain acts as the idle task: yield until every worker has exited.
-    while sched::any_worker_runnable() {
+    // kmain is the idle task: yield until every worker has exited.
+    while sched::any_worker_alive() {
         sched::yield_now();
     }
 
-    uart::write_str("\nscheduler self-check passed\n");
+    uart::write_str("preempt+sleep self-check passed\n");
 }
 
-/// A kernel thread: print its letter a few times, yielding between prints.
-extern "C" fn worker(letter: usize) {
-    for _ in 0..3 {
-        kprint!("{}", letter as u8 as char);
-        sched::yield_now();
+/// A thread that blocks: prints on each wake, sleeping between.
+extern "C" fn sleeper(_arg: usize) {
+    for i in 1..=3 {
+        kprintln!("[sleeper] woke {}", i);
+        sched::sleep_ticks(3);
+    }
+}
+
+/// A CPU-bound thread that never yields or sleeps. Only preemption lets the
+/// sleeper run while this is spinning; the interleaved output is the proof.
+extern "C" fn busy(_arg: usize) {
+    for round in 1..=3 {
+        kprintln!("[busy] round {}", round);
+        spin_ticks(3);
+    }
+    uart::write_str("busy thread done\n");
+}
+
+/// Busy-poll (without yielding) until `n` timer ticks have elapsed. Tick-bounded
+/// so the duration doesn't depend on emulation speed.
+fn spin_ticks(n: u64) {
+    let target = timer::ticks() + n;
+    while timer::ticks() < target {
+        core::hint::spin_loop();
     }
 }
 

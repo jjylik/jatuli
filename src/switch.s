@@ -31,6 +31,7 @@ context_switch:
 // the saved x30, so the first context_switch returns here.
 .global task_trampoline
 task_trampoline:
+    msr     daifclr, #2         // enable IRQs so the new thread is preemptible
     mov     x0, x20             // arg
     blr     x19                 // entry(arg)
     b       task_exit           // entry returned -> exit (never returns)
