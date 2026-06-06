@@ -18,4 +18,9 @@ SECTIONS
     . = ALIGN(16);
     . = . + 0x40000;
     _stack_top = .;
+
+    /* End of everything the kernel image occupies. The frame allocator hands
+       out physical frames only from above here, rounded up to a 4 KiB boundary. */
+    . = ALIGN(0x1000);
+    _kernel_end = .;
 }
