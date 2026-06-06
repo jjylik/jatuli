@@ -7,6 +7,7 @@ use core::arch::global_asm;
 use core::panic::PanicInfo;
 
 mod allocator;
+mod exceptions;
 mod frames;
 mod mem;
 mod mmu;
@@ -20,6 +21,8 @@ global_asm!(include_str!("boot.s"));
 pub extern "C" fn kmain() -> ! {
     uart::write_str("Hello, World!\n");
 
+    exceptions::init_exceptions();
+
     frames::init_frames();
     frame_self_check();
 
@@ -28,6 +31,8 @@ pub extern "C" fn kmain() -> ! {
 
     allocator::init_heap();
     heap_self_check();
+
+    exception_self_check();
 
     loop {
         unsafe { core::arch::asm!("wfe") }
@@ -120,6 +125,20 @@ fn mmu_self_check() {
     free_frame(f);
 
     uart::write_str("mmu self-check passed\n");
+}
+
+/// Prove the exception path works: deliberately trigger a data abort and let the
+/// installed handler report it. Does not return in practice (the handler halts).
+fn exception_self_check() {
+    uart::write_str("exception vectors installed\n");
+    uart::write_str("triggering a deliberate data abort at 0xdead0000...\n");
+
+    // 0xDEAD_0000 is unmapped (invalid L1[3]) -> data abort -> exception_dispatch.
+    let bad = 0xDEAD_0000usize as *const u32;
+    // SAFETY: intentionally faulting to demonstrate the exception handler.
+    let _ = unsafe { core::ptr::read_volatile(bad) };
+
+    uart::write_str("ERROR: deliberate fault was not taken\n");
 }
 
 #[panic_handler]

@@ -32,3 +32,34 @@ pub fn write_str(s: &str) {
         write_byte(b);
     }
 }
+
+/// A zero-sized handle implementing [`core::fmt::Write`] over the UART, so the
+/// `kprint!`/`kprintln!` macros can render `format_args!` without a heap.
+pub struct Uart;
+
+impl core::fmt::Write for Uart {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        write_str(s);
+        Ok(())
+    }
+}
+
+/// Backing function for the `kprint!`/`kprintln!` macros.
+pub fn _print(args: core::fmt::Arguments) {
+    use core::fmt::Write;
+    // Writing to the UART is infallible here; ignore the formatter Result.
+    let _ = Uart.write_fmt(args);
+}
+
+/// Print formatted text to the UART (no trailing newline).
+#[macro_export]
+macro_rules! kprint {
+    ($($arg:tt)*) => { $crate::uart::_print(format_args!($($arg)*)) };
+}
+
+/// Print formatted text to the UART followed by a newline.
+#[macro_export]
+macro_rules! kprintln {
+    () => { $crate::kprint!("\n") };
+    ($($arg:tt)*) => { $crate::kprint!("{}\n", format_args!($($arg)*)) };
+}
