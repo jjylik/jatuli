@@ -9,10 +9,12 @@ use core::panic::PanicInfo;
 mod allocator;
 mod exceptions;
 mod frames;
+mod gic;
 mod mem;
 mod mmu;
 mod syscall;
 mod sync;
+mod timer;
 mod uart;
 
 global_asm!(include_str!("boot.s"));
@@ -35,8 +37,13 @@ pub extern "C" fn kmain() -> ! {
 
     syscall_self_check();
 
+    gic::init(timer::TIMER_INTID);
+    timer::init();
+    enable_irqs();
+    irq_self_check();
+
     loop {
-        unsafe { core::arch::asm!("wfe") }
+        unsafe { core::arch::asm!("wfi") }
     }
 }
 
@@ -158,6 +165,24 @@ unsafe fn syscall(num: u64, arg0: u64, arg1: u64) -> u64 {
         in("x1") arg1,
     );
     ret
+}
+
+/// Unmask IRQs (clear PSTATE.I). Call only once the vector table, GIC, and timer
+/// are configured.
+fn enable_irqs() {
+    // SAFETY: enabling IRQ delivery now that handlers and the GIC are ready.
+    unsafe { core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)) };
+}
+
+/// Prove the interrupt path works: sleep on `wfi` until the timer has fired
+/// several times (each IRQ wakes the CPU), then report.
+fn irq_self_check() {
+    while timer::ticks() < 5 {
+        // SAFETY: wait for an interrupt; the timer IRQ wakes us.
+        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
+    }
+    kprintln!("timer fired {} times", timer::ticks());
+    uart::write_str("irq self-check passed\n");
 }
 
 #[panic_handler]

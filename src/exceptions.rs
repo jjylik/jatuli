@@ -60,12 +60,32 @@ extern "C" fn exception_dispatch(kind: u64, frame: *mut TrapFrame) {
     // SAFETY: the asm stub passes a pointer to a valid TrapFrame on the stack.
     let frame = unsafe { &mut *frame };
     let esr = read_esr();
-    let ec = (esr >> 26) & 0x3F;
 
-    match ec {
-        EC_SVC => syscall::dispatch(frame),
+    // The 16 vectors come in groups of four; index % 4 == 1 is the IRQ entry
+    // (vector 5 at our current EL with SPx).
+    match kind % 4 {
+        1 => handle_irq(),
+        0 => {
+            let ec = (esr >> 26) & 0x3F;
+            match ec {
+                EC_SVC => syscall::dispatch(frame),
+                _ => report_and_halt(kind, esr, frame),
+            }
+        }
         _ => report_and_halt(kind, esr, frame),
     }
+}
+
+/// Service an IRQ: acknowledge it at the GIC, dispatch by INTID, then EOI.
+fn handle_irq() {
+    let intid = crate::gic::acknowledge();
+    if crate::gic::is_spurious(intid) {
+        return;
+    }
+    if intid == crate::timer::TIMER_INTID {
+        crate::timer::on_tick();
+    }
+    crate::gic::eoi(intid);
 }
 
 /// Report an unexpected exception and halt (faults are not recoverable here).

@@ -3,4 +3,4 @@ target = "aarch64-unknown-none"
 
 [target.aarch64-unknown-none]
 rustflags = ["-C", "link-arg=-Tlinker.ld"]
-runner = "qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic -kernel"
+runner = "qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 -nographic -kernel"
