@@ -64,6 +64,10 @@ const MAX_SEGMENTS: usize = 8;
 pub struct Range {
     pub start: usize,
     pub end: usize,
+    /// Whether the segment was mapped writable (`PAGE_USER_RW`; everything the
+    /// loader maps is either RX or RW). Gates the kernel writing into it on the
+    /// user's behalf (e.g. `SYS_READ`).
+    pub writable: bool,
 }
 
 /// The result of loading an image: where to begin execution, and the mapped
@@ -88,7 +92,11 @@ pub fn load(image: &[u8]) -> Loaded {
     let phentsize = read_u16(image, E_PHENTSIZE) as usize;
     let phnum = read_u16(image, E_PHNUM) as usize;
 
-    let mut ranges = [Range { start: 0, end: 0 }; MAX_SEGMENTS];
+    let mut ranges = [Range {
+        start: 0,
+        end: 0,
+        writable: false,
+    }; MAX_SEGMENTS];
     let mut count = 0;
 
     for i in 0..phnum {
@@ -146,6 +154,7 @@ pub fn load(image: &[u8]) -> Loaded {
         ranges[count] = Range {
             start: vaddr,
             end: vaddr + memsz,
+            writable: !executable,
         };
         count += 1;
     }

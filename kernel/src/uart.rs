@@ -1,4 +1,5 @@
-//! Minimal PL011 UART output driver for the QEMU `virt` machine.
+//! Minimal PL011 UART driver (transmit + polled receive) for the QEMU `virt`
+//! machine.
 
 use core::ptr::{read_volatile, write_volatile};
 
@@ -10,6 +11,8 @@ const UARTDR: usize = 0x00;
 const UARTFR: usize = 0x18;
 /// Transmit-FIFO-full flag (UARTFR bit 5).
 const TXFF: u32 = 1 << 5;
+/// Receive-FIFO-empty flag (UARTFR bit 4).
+const RXFE: u32 = 1 << 4;
 
 /// Write a single byte, spinning until the TX FIFO has room.
 fn write_byte(b: u8) {
@@ -20,6 +23,21 @@ fn write_byte(b: u8) {
         while read_volatile(fr) & TXFF != 0 {}
         let dr = (UART0_BASE + UARTDR) as *mut u32;
         write_volatile(dr, b as u32);
+    }
+}
+
+/// Read a single byte if one is waiting, without blocking. The PL011 stays in
+/// its reset (1-byte FIFO) mode; QEMU's chardev layer applies backpressure, so
+/// pasted or piped input queues host-side rather than being dropped.
+pub fn try_getc() -> Option<u8> {
+    // SAFETY: valid PL011 MMIO registers on the virt machine; volatile reads.
+    unsafe {
+        let fr = (UART0_BASE + UARTFR) as *const u32;
+        if read_volatile(fr) & RXFE != 0 {
+            return None;
+        }
+        let dr = (UART0_BASE + UARTDR) as *const u32;
+        Some(read_volatile(dr) as u8)
     }
 }
 

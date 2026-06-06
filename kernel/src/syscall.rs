@@ -15,6 +15,9 @@ pub const SYS_ADD: u64 = 1;
 pub const SYS_PRINT: u64 = 2;
 /// Terminate the user program: `x0` = exit code. Does not return to EL0.
 pub const SYS_EXIT: u64 = 3;
+/// Read from the console: `x0` = buf, `x1` = len. Blocks until at least one
+/// byte is available; returns the number of bytes read.
+pub const SYS_READ: u64 = 4;
 
 /// Dispatch the syscall described by `frame` (number in `x8`, args in `x0..`).
 /// `from_user` is true when the `SVC` came from EL0, which gates pointer validation.
@@ -22,6 +25,7 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
     let ret = match frame.x[8] {
         SYS_ADD => frame.x[0].wrapping_add(frame.x[1]),
         SYS_PRINT => sys_print(frame.x[0], frame.x[1], from_user),
+        SYS_READ => sys_read(frame.x[0], frame.x[1], from_user),
         SYS_EXIT => {
             kprintln!("[user] exited with code {}", frame.x[0] as i64);
             // The process is done; control stays at EL1. Park the CPU here —
@@ -37,6 +41,42 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
         }
     };
     frame.x[0] = ret;
+}
+
+/// Read console bytes into `[buf, buf+len)`. Blocks (polling the UART) until at
+/// least one byte arrives, then greedily drains whatever else is immediately
+/// available. Buffers from user mode must lie in *writable* user memory — the
+/// kernel is about to store through this pointer, and a store into the R-X code
+/// segment would permission-fault at EL1 too.
+///
+/// No kernel buffer is involved: the data path is UART data register → CPU
+/// register → user memory (same address space, `PAGE_USER_RW` is EL1-writable).
+fn sys_read(buf: u64, len: u64, from_user: bool) -> u64 {
+    if from_user && !crate::user::is_user_range_writable(buf as usize, len as usize) {
+        kprintln!("rejected non-writable user buffer {:#x}", buf);
+        return u64::MAX;
+    }
+    if len == 0 {
+        return 0;
+    }
+    let dst = buf as *mut u8;
+    let mut count: usize = 0;
+    while count < len as usize {
+        match uart::try_getc() {
+            // SAFETY: kernel-trusted, or validated writable user memory.
+            Some(b) => unsafe {
+                dst.add(count).write_volatile(b);
+                count += 1;
+            },
+            // Nothing waiting: block for the first byte, return once we have
+            // some. A plain spin, not `wfi`: IRQs are masked while we handle
+            // the syscall, so the pending timer interrupt would make `wfi`
+            // return immediately anyway.
+            None if count == 0 => core::hint::spin_loop(),
+            None => break,
+        }
+    }
+    count as u64
 }
 
 /// Print a UTF-8 string given a pointer and length. Pointers from user mode are

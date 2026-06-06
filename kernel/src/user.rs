@@ -23,10 +23,23 @@ static LOADED: Locked<Option<elf::Loaded>> = Locked::new(None);
 /// Whether `[ptr, ptr + len)` lies entirely within a mapped user segment or the
 /// user stack. Used to validate syscall pointers from EL0.
 pub fn is_user_range(ptr: usize, len: usize) -> bool {
+    check_user_range(ptr, len, false)
+}
+
+/// Like [`is_user_range`], but additionally requires the range to be writable:
+/// the stack, or a segment the loader mapped `PAGE_USER_RW`. The kernel must
+/// check this before storing into user memory (e.g. `SYS_READ`) — a store into
+/// the R-X code segment would permission-fault the kernel itself.
+pub fn is_user_range_writable(ptr: usize, len: usize) -> bool {
+    check_user_range(ptr, len, true)
+}
+
+fn check_user_range(ptr: usize, len: usize, need_write: bool) -> bool {
     let end = match ptr.checked_add(len) {
         Some(e) => e,
         None => return false,
     };
+    // The stack is always read/write.
     if ptr >= USER_STACK_VA && end <= USER_STACK_VA + USER_STACK_SIZE {
         return true;
     }
@@ -34,7 +47,7 @@ pub fn is_user_range(ptr: usize, len: usize) -> bool {
     if let Some(loaded) = guard.as_ref() {
         for r in &loaded.ranges[..loaded.count] {
             if ptr >= r.start && end <= r.end {
-                return true;
+                return !need_write || r.writable;
             }
         }
     }

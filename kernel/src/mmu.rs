@@ -186,11 +186,7 @@ pub fn map_page(va: usize, pa: usize, flags: u64) {
     }
 }
 
-/// Make freshly-written code at the identity-mapped physical range `[pa, pa+len)`
-/// visible to instruction fetch: clean it from the D-cache to the point of
-/// unification and invalidate the I-cache. AArch64 I/D caches are not coherent,
-/// so writing instructions then executing them requires this. (QEMU's TCG would
-/// not catch its absence, but real hardware would.)
+// See B2.6.5 Concurrent modification and execution of instructions in the ARMv8 Architecture Reference Manual
 pub fn sync_instruction_cache(pa: usize, len: usize) {
     const LINE: usize = 64; // Cortex-A72 cache-line size.
     let start = pa & !(LINE - 1);
