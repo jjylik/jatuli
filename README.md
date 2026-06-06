@@ -24,6 +24,27 @@ Exit QEMU with `Ctrl-A` then `X`.
 
 Boots the kernel under QEMU and checks the expected self-check output.
 
+## Inspecting memory
+
+    ./dump.sh
+
+Boots the kernel, waits until the user program has exited (kernel parked in
+`wfi`, MMU on, user mappings live), then snapshots memory via the QEMU monitor
+into `dumps/`: all 128 MiB of physical RAM (`ram.bin`), each user `PT_LOAD`
+segment and the user stack (read through the live page tables), plus the serial
+transcript and a `MAP.txt` legend mapping file offsets to addresses.
+
+Explore the dumps with any hex viewer (`xxd`, [ImHex](https://imhex.werwolv.net/),
+Hex Fiend). For example, the kernel image starts at `ram.bin` offset `0x80000`
+(physical `0x40080000`):
+
+    xxd -s 0x80000 -l 64 dumps/ram.bin
+
+For *live* exploration with symbols, use QEMU's GDB stub instead: add `-s` to
+the QEMU command line, then attach with `lldb target/aarch64-unknown-none/debug/jos`
+and `gdb-remote localhost:1234` (or `gdb` + `target remote :1234`) and read any
+address with the kernel's symbol names.
+
 ## What it does
 
 Brings itself up in stages, each with a self-check printed to the serial console:

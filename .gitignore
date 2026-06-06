@@ -5,3 +5,6 @@
 *.img
 *.iso
 .DS_Store
+
+# memory snapshots from dump.sh
+/dumps
