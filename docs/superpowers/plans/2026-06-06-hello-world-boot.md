@@ -143,12 +143,23 @@ SECTIONS
 - [ ] **Step 4: Write `src/boot.s`**
 
 Uses `adrp`/`add` (the canonical PC-relative way to load a symbol address; supported by
-LLVM's integrated assembler).
+LLVM's integrated assembler). Also enables FP/SIMD: AArch64 resets with FP/SIMD access
+trapped (`CPACR_EL1.FPEN = 0`), and the Rust compiler may emit NEON instructions, so we
+must enable it before calling into Rust or the first NEON instruction faults.
 
 ```asm
 .section .text.boot
 .global _start
 _start:
+    // AArch64 resets with FP/SIMD access trapped (CPACR_EL1.FPEN = 0b00).
+    // The compiler may emit NEON/FP instructions, so enable full FP/SIMD
+    // access (FPEN = 0b11) before running any Rust code. ISB so the change
+    // takes effect before the next instructions.
+    mov     x0, #(3 << 20)
+    msr     cpacr_el1, x0
+    isb
+
+    // Set up the stack (grows down from _stack_top) and jump to Rust.
     adrp    x9, _stack_top
     add     x9, x9, :lo12:_stack_top
     mov     sp, x9
