@@ -32,18 +32,26 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
 
 ## Layout
 
-- `src/boot.s` — `_start`: enables FP/SIMD, sets up the stack, branches to `kmain`.
-- `src/main.rs` — `kmain` entry point, self-checks, panic handler.
-- `src/uart.rs` — PL011 UART driver + `core::fmt::Write` (`kprint!`/`kprintln!`).
-- `src/mem.rs` — freestanding `memcpy`/`memset`/`memmove`/`memcmp`.
-- `src/sync.rs` — `Locked<A>` spinlock.
-- `src/allocator.rs` — bump heap over a frame-backed virtual window.
-- `src/frames.rs` — physical 4 KiB frame allocator (intrusive free-list).
-- `src/mmu.rs` — page tables, MMU enable, `map_page`.
-- `src/exceptions.rs` / `src/exceptions.s` — vector table, trap frame, dispatch.
-- `src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI).
-- `src/gic.rs` — GICv3 interrupt controller.
-- `src/timer.rs` — generic timer (periodic interrupt).
-- `linker.ld` — image at `0x40080000`, stack, `_kernel_end`.
+- `kernel/` — the kernel crate (`jos`).
+  - `kernel/src/boot.s` — `_start`: enables FP/SIMD, sets up the stack, branches to `kmain`.
+  - `kernel/src/main.rs` — `kmain` entry point, self-checks, panic handler.
+  - `kernel/src/uart.rs` — PL011 UART driver + `core::fmt::Write` (`kprint!`/`kprintln!`).
+  - `kernel/src/mem.rs` — freestanding `memcpy`/`memset`/`memmove`/`memcmp`.
+  - `kernel/src/sync.rs` — `Locked<A>` spinlock.
+  - `kernel/src/allocator.rs` — bump heap over a frame-backed virtual window.
+  - `kernel/src/frames.rs` — physical 4 KiB frame allocator (intrusive free-list).
+  - `kernel/src/mmu.rs` — page tables, MMU enable, `map_page`, cache maintenance.
+  - `kernel/src/exceptions.rs` / `kernel/src/exceptions.s` — vector table, trap frame, dispatch.
+  - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI), incl. `SYS_EXIT`.
+  - `kernel/src/gic.rs` — GICv3 interrupt controller.
+  - `kernel/src/timer.rs` — generic timer (periodic interrupt).
+  - `kernel/src/sched.rs` / `kernel/src/switch.s` — cooperative + preemptive scheduler.
+  - `kernel/src/elf.rs` — minimal ELF64 loader for the embedded user image.
+  - `kernel/src/user.rs` — load the user ELF, map a stack, drop to EL0; pointer validation.
+  - `kernel/build.rs` — builds the `user` crate and embeds its ELF.
+  - `kernel/linker.ld` — kernel image at `0x40080000`, stack, `_kernel_end`.
+- `user/` — the EL0 userspace program crate (separately compiled).
+  - `user/src/main.rs` — `_start`, `svc` syscall stubs, hello + exit.
+  - `user/user.ld` — EL0 VA layout with separate R-X / R-W segments.
 
 See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/` for plans.

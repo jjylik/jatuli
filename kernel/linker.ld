@@ -12,13 +12,6 @@ SECTIONS
 
     .rodata : { *(.rodata .rodata.*) }
 
-    /* EL0 user code, page-aligned and isolated so it can be mapped EL0-RX. */
-    . = ALIGN(0x1000);
-    __user_start = .;
-    .user_text : { KEEP(*(.user_text)) }
-    . = ALIGN(0x1000);
-    __user_end = .;
-
     .data   : { *(.data .data.*) }
     .bss    : { *(.bss .bss.*) *(COMMON) }
 

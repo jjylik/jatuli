@@ -13,6 +13,8 @@ use crate::uart;
 pub const SYS_ADD: u64 = 1;
 /// Print a string: `x0 = ptr`, `x1 = len`, returns 0. (Demo syscall.)
 pub const SYS_PRINT: u64 = 2;
+/// Terminate the user program: `x0` = exit code. Does not return to EL0.
+pub const SYS_EXIT: u64 = 3;
 
 /// Dispatch the syscall described by `frame` (number in `x8`, args in `x0..`).
 /// `from_user` is true when the `SVC` came from EL0, which gates pointer validation.
@@ -20,6 +22,15 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
     let ret = match frame.x[8] {
         SYS_ADD => frame.x[0].wrapping_add(frame.x[1]),
         SYS_PRINT => sys_print(frame.x[0], frame.x[1], from_user),
+        SYS_EXIT => {
+            kprintln!("[user] exited with code {}", frame.x[0] as i64);
+            // The process is done; control stays at EL1. Park the CPU here —
+            // we never ERET back to EL0. (Full teardown is a later phase.)
+            loop {
+                // SAFETY: idle until an interrupt; nothing left to run.
+                unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
+            }
+        }
         other => {
             kprintln!("unknown syscall {}", other);
             u64::MAX
