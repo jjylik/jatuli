@@ -12,6 +12,7 @@ mod frames;
 mod gic;
 mod mem;
 mod mmu;
+mod sched;
 mod syscall;
 mod sync;
 mod timer;
@@ -42,6 +43,8 @@ pub extern "C" fn kmain() -> ! {
     timer::init();
     enable_irqs();
     irq_self_check();
+
+    sched_self_check();
 
     uart::write_str("entering user mode (EL0)...\n");
     user::enter_user();
@@ -183,6 +186,30 @@ fn irq_self_check() {
     }
     kprintln!("timer fired {} times", timer::ticks());
     uart::write_str("irq self-check passed\n");
+}
+
+/// Spawn three kernel threads that round-robin via cooperative yield, printing
+/// their letter; the deterministic output proves context switching works.
+fn sched_self_check() {
+    sched::init();
+    sched::spawn(worker, b'A' as usize);
+    sched::spawn(worker, b'B' as usize);
+    sched::spawn(worker, b'C' as usize);
+
+    // kmain acts as the idle task: yield until every worker has exited.
+    while sched::any_worker_runnable() {
+        sched::yield_now();
+    }
+
+    uart::write_str("\nscheduler self-check passed\n");
+}
+
+/// A kernel thread: print its letter a few times, yielding between prints.
+extern "C" fn worker(letter: usize) {
+    for _ in 0..3 {
+        kprint!("{}", letter as u8 as char);
+        sched::yield_now();
+    }
 }
 
 #[panic_handler]
