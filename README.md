@@ -15,7 +15,8 @@ A hobby AArch64 kernel for learning kernel basics, run under QEMU.
 
     cargo run
 
-Boots under QEMU (`-machine virt,gic-version=3`), runs its self-checks, and idles.
+Boots under QEMU (`-machine virt,gic-version=3`), runs its self-checks, and drops
+into `jsh`, a minimal userspace shell — type at the `jsh> ` prompt (`help`, `exit`).
 Exit QEMU with `Ctrl-A` then `X`.
 
 ## Test
@@ -56,14 +57,14 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
 - `kernel/` — the kernel crate (`jos`).
   - `kernel/src/boot.s` — `_start`: enables FP/SIMD, sets up the stack, branches to `kmain`.
   - `kernel/src/main.rs` — `kmain` entry point, self-checks, panic handler.
-  - `kernel/src/uart.rs` — PL011 UART driver + `core::fmt::Write` (`kprint!`/`kprintln!`).
+  - `kernel/src/uart.rs` — PL011 UART driver (TX + polled RX) + `kprint!`/`kprintln!`.
   - `kernel/src/mem.rs` — freestanding `memcpy`/`memset`/`memmove`/`memcmp`.
   - `kernel/src/sync.rs` — `Locked<A>` spinlock.
   - `kernel/src/allocator.rs` — bump heap over a frame-backed virtual window.
   - `kernel/src/frames.rs` — physical 4 KiB frame allocator (intrusive free-list).
   - `kernel/src/mmu.rs` — page tables, MMU enable, `map_page`, cache maintenance.
   - `kernel/src/exceptions.rs` / `kernel/src/exceptions.s` — vector table, trap frame, dispatch.
-  - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI), incl. `SYS_EXIT`.
+  - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI): add, print, read, exit.
   - `kernel/src/gic.rs` — GICv3 interrupt controller.
   - `kernel/src/timer.rs` — generic timer (periodic interrupt).
   - `kernel/src/sched.rs` / `kernel/src/switch.s` — cooperative + preemptive scheduler.
@@ -72,7 +73,7 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/build.rs` — builds the `user` crate and embeds its ELF.
   - `kernel/linker.ld` — kernel image at `0x40080000`, stack, `_kernel_end`.
 - `user/` — the EL0 userspace program crate (separately compiled).
-  - `user/src/main.rs` — `_start`, `svc` syscall stubs, hello + exit.
+  - `user/src/main.rs` — `jsh`: prompt, line editing, `help`/`exit` builtins.
   - `user/user.ld` — EL0 VA layout with separate R-X / R-W segments.
 
 See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/` for plans.

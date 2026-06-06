@@ -5,8 +5,10 @@ cargo build -q
 KERNEL=target/aarch64-unknown-none/debug/jos
 
 OUT="$(mktemp)"
-qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a72 -nographic \
-    -kernel "$KERNEL" >"$OUT" 2>&1 &
+# Pipe a scripted shell session into the serial console: a typo, help, exit.
+# (\r is what a real terminal sends for Enter.)
+printf 'hellp\rhelp\rexit\r' | qemu-system-aarch64 -machine virt,gic-version=3 \
+    -cpu cortex-a72 -nographic -kernel "$KERNEL" >"$OUT" 2>&1 &
 QPID=$!
 
 sleep 2
@@ -14,7 +16,7 @@ kill "$QPID" 2>/dev/null || true
 wait "$QPID" 2>/dev/null || true
 
 fail=0
-for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "Hello from a syscall!" "syscall self-check passed" "irq self-check passed" "elf self-check passed" "entering user mode (EL0)" "Hello, world from EL0!" "[user] exited with code 0" "[sleeper] woke 3" "busy thread done" "preempt+sleep self-check passed"; do
+for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "Hello from a syscall!" "syscall self-check passed" "irq self-check passed" "elf self-check passed" "entering user mode (EL0)" "jsh: type 'help'" "unknown command: hellp" "commands: help exit" "[user] exited with code 0" "[sleeper] woke 3" "busy thread done" "preempt+sleep self-check passed"; do
     if ! grep -qF "$needle" "$OUT"; then
         echo "FAIL: expected '$needle' in serial output."
         fail=1
