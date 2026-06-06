@@ -7,6 +7,7 @@ use core::arch::global_asm;
 use core::panic::PanicInfo;
 
 mod allocator;
+mod elf;
 mod exceptions;
 mod frames;
 mod gic;
@@ -47,8 +48,18 @@ pub extern "C" fn kmain() -> ! {
 
     sched_self_check();
 
+    elf_self_check();
+
     uart::write_str("entering user mode (EL0)...\n");
     user::enter_user();
+}
+
+/// Validate the embedded userspace ELF header before we try to run it.
+fn elf_self_check() {
+    let entry = elf::validate(elf::USER_ELF);
+    assert!(entry >= 0x2_0000_0000, "user entry VA not in the user window");
+    kprintln!("user elf: {} bytes, entry {:#x}", elf::USER_ELF.len(), entry);
+    uart::write_str("elf self-check passed\n");
 }
 
 /// Exercise the global allocator. Panics (and so halts) if anything is wrong.
