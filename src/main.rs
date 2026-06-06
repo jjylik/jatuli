@@ -9,6 +9,7 @@ use core::panic::PanicInfo;
 mod allocator;
 mod frames;
 mod mem;
+mod mmu;
 mod sync;
 mod uart;
 
@@ -24,6 +25,9 @@ pub extern "C" fn kmain() -> ! {
 
     frames::init_frames();
     frame_self_check();
+
+    mmu::init_mmu();
+    mmu_self_check();
 
     loop {
         unsafe { core::arch::asm!("wfe") }
@@ -80,6 +84,36 @@ fn frame_self_check() {
     free_frame(f3);
 
     uart::write_str("frame self-check passed\n");
+}
+
+/// Verify the MMU is on and the identity map works. Panics (halts) on failure.
+fn mmu_self_check() {
+    use alloc::boxed::Box;
+    use frames::{alloc_frame, free_frame};
+
+    // Reaching here at all means instruction fetch survived enabling translation;
+    // this print proves the Device mapping (UART) is correct.
+    uart::write_str("mmu enabled\n");
+
+    // Heap (Normal cacheable RAM) still works through translation.
+    let boxed = Box::new(0xCAFEu32);
+    assert_eq!(*boxed, 0xCAFE, "heap read-back wrong after MMU enable");
+
+    // A freshly allocated frame is reachable via its identity-mapped address.
+    let f = alloc_frame().expect("frame pool unexpectedly empty");
+    // SAFETY: f is a valid 4 KiB frame, identity-mapped as Normal RAM.
+    unsafe {
+        let p = f.addr() as *mut u32;
+        p.write_volatile(0x1234_5678);
+        assert_eq!(
+            p.read_volatile(),
+            0x1234_5678,
+            "frame read-back wrong after MMU enable"
+        );
+    }
+    free_frame(f);
+
+    uart::write_str("mmu self-check passed\n");
 }
 
 #[panic_handler]
