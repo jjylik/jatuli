@@ -20,14 +20,14 @@ global_asm!(include_str!("boot.s"));
 pub extern "C" fn kmain() -> ! {
     uart::write_str("Hello, World!\n");
 
-    allocator::init_heap();
-    heap_self_check();
-
     frames::init_frames();
     frame_self_check();
 
     mmu::init_mmu();
     mmu_self_check();
+
+    allocator::init_heap();
+    heap_self_check();
 
     loop {
         unsafe { core::arch::asm!("wfe") }
@@ -42,6 +42,7 @@ pub extern "C" fn kmain() -> ! {
     reason = "growth-by-push deliberately exercises Vec reallocation and memcpy"
 )]
 fn heap_self_check() {
+    use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::vec::Vec;
 
@@ -56,6 +57,16 @@ fn heap_self_check() {
     greeting.push_str("Hello from the heap!");
     uart::write_str(&greeting);
     uart::write_str("\n");
+
+    // The allocation must land in the frame-backed virtual window, proving the
+    // heap is no longer on a static array.
+    let boxed = Box::new(0xCAFEu32);
+    assert_eq!(*boxed, 0xCAFE, "heap read-back wrong");
+    let addr = &*boxed as *const u32 as usize;
+    assert!(
+        (allocator::HEAP_VBASE..allocator::HEAP_VBASE + allocator::HEAP_SIZE).contains(&addr),
+        "heap allocation is not in the mapped virtual window"
+    );
 
     uart::write_str("heap self-check passed\n");
 }
@@ -88,16 +99,11 @@ fn frame_self_check() {
 
 /// Verify the MMU is on and the identity map works. Panics (halts) on failure.
 fn mmu_self_check() {
-    use alloc::boxed::Box;
     use frames::{alloc_frame, free_frame};
 
     // Reaching here at all means instruction fetch survived enabling translation;
     // this print proves the Device mapping (UART) is correct.
     uart::write_str("mmu enabled\n");
-
-    // Heap (Normal cacheable RAM) still works through translation.
-    let boxed = Box::new(0xCAFEu32);
-    assert_eq!(*boxed, 0xCAFE, "heap read-back wrong after MMU enable");
 
     // A freshly allocated frame is reachable via its identity-mapped address.
     let f = alloc_frame().expect("frame pool unexpectedly empty");

@@ -16,6 +16,8 @@ const ENTRIES: usize = 512;
 // Descriptor type bits [1:0].
 const DESC_BLOCK: u64 = 0b01;
 const DESC_TABLE: u64 = 0b11;
+const DESC_VALID: u64 = 0b01; // bit 0 set = entry is valid
+const DESC_PAGE: u64 = 0b11; // at L3, 0b11 means a page (not a table)
 
 // Lower attributes (zero-valued fields — AttrIndx=0 for Normal, AP=0b00 for EL1
 // read/write — are simply left out of the OR).
@@ -31,6 +33,13 @@ const UXN: u64 = 1 << 54; // unprivileged execute-never
 const NORMAL_BLOCK: u64 = DESC_BLOCK | SH_INNER | AF | UXN;
 /// Block flags for Device MMIO (AttrIndx=1, never executable).
 const DEVICE_BLOCK: u64 = DESC_BLOCK | ATTR_IDX_DEVICE | AF | PXN | UXN;
+
+/// Mask selecting a descriptor's output-address bits [47:12].
+const ADDR_MASK: u64 = 0x0000_FFFF_FFFF_F000;
+
+/// L3 page-descriptor flags for kernel read/write data: Normal cacheable, EL1
+/// read/write, non-executable. (Type bits 0b11 = a valid page at L3.)
+pub const PAGE_KERNEL_RW: u64 = DESC_PAGE | SH_INNER | AF | UXN | PXN;
 
 // Identity-mapped physical layout.
 const RAM_BASE: usize = 0x4000_0000;
@@ -107,6 +116,61 @@ pub fn init_mmu() {
             "msr sctlr_el1, {0}",
             "isb",
             in(reg) sctlr,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+/// Follow the table descriptor at `table[index]`, allocating and installing a
+/// fresh next-level table if the entry is empty.
+///
+/// # Safety
+/// `table` must point at a valid 512-entry page table.
+unsafe fn get_or_create(table: *mut u64, index: usize) -> *mut u64 {
+    let entry = table.add(index).read_volatile();
+    if entry & DESC_VALID != 0 {
+        assert!(
+            entry & DESC_TABLE == DESC_TABLE,
+            "expected a table descriptor while walking, found a block"
+        );
+        (entry & ADDR_MASK) as *mut u64
+    } else {
+        let next = alloc_table();
+        table.add(index).write_volatile((next as u64) | DESC_TABLE);
+        next
+    }
+}
+
+/// Map one 4 KiB page: virtual `va` -> physical `pa` with the given descriptor
+/// `flags`, creating any missing intermediate tables. `va` and `pa` must be
+/// 4 KiB-aligned. Requires the MMU to be on (it walks the live TTBR0 tables).
+pub fn map_page(va: usize, pa: usize, flags: u64) {
+    let ttbr0: u64;
+    // SAFETY: reading a system register has no memory effects.
+    unsafe {
+        asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack, preserves_flags));
+    }
+    let l0 = (ttbr0 & ADDR_MASK) as *mut u64;
+
+    let i0 = (va >> 39) & 0x1FF;
+    let i1 = (va >> 30) & 0x1FF;
+    let i2 = (va >> 21) & 0x1FF;
+    let i3 = (va >> 12) & 0x1FF;
+
+    // SAFETY: l0 is the live top-level table; get_or_create keeps every level a
+    // valid table, and each index is < 512.
+    unsafe {
+        let l1 = get_or_create(l0, i0);
+        let l2 = get_or_create(l1, i1);
+        let l3 = get_or_create(l2, i2);
+        l3.add(i3).write_volatile((pa as u64 & ADDR_MASK) | flags);
+
+        asm!(
+            "dsb ishst",            // table writes visible to the walker
+            "tlbi vaae1, {page}",   // drop any stale entry for this VA
+            "dsb ish",
+            "isb",
+            page = in(reg) (va >> 12) as u64,
             options(nostack, preserves_flags),
         );
     }
