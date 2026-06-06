@@ -185,3 +185,30 @@ pub fn map_page(va: usize, pa: usize, flags: u64) {
         );
     }
 }
+
+/// Make freshly-written code at the identity-mapped physical range `[pa, pa+len)`
+/// visible to instruction fetch: clean it from the D-cache to the point of
+/// unification and invalidate the I-cache. AArch64 I/D caches are not coherent,
+/// so writing instructions then executing them requires this. (QEMU's TCG would
+/// not catch its absence, but real hardware would.)
+pub fn sync_instruction_cache(pa: usize, len: usize) {
+    const LINE: usize = 64; // Cortex-A72 cache-line size.
+    let start = pa & !(LINE - 1);
+    let end = pa + len;
+
+    // SAFETY: cache maintenance over identity-mapped Normal memory we just wrote.
+    unsafe {
+        let mut p = start;
+        while p < end {
+            asm!("dc cvau, {0}", in(reg) p, options(nostack, preserves_flags));
+            p += LINE;
+        }
+        asm!("dsb ish", options(nostack, preserves_flags));
+        let mut q = start;
+        while q < end {
+            asm!("ic ivau, {0}", in(reg) q, options(nostack, preserves_flags));
+            q += LINE;
+        }
+        asm!("dsb ish", "isb", options(nostack, preserves_flags));
+    }
+}

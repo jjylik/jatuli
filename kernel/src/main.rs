@@ -54,12 +54,24 @@ pub extern "C" fn kmain() -> ! {
     user::enter_user();
 }
 
-/// Validate the embedded userspace ELF header before we try to run it.
+/// Validate and load the embedded userspace ELF, then read back its entry word.
+/// (The load self-check is temporary; Task 5 moves loading into `enter_user`.)
 fn elf_self_check() {
-    let entry = elf::validate(elf::USER_ELF);
-    assert!(entry >= 0x2_0000_0000, "user entry VA not in the user window");
-    kprintln!("user elf: {} bytes, entry {:#x}", elf::USER_ELF.len(), entry);
-    uart::write_str("elf self-check passed\n");
+    let loaded = elf::load(elf::USER_ELF);
+    assert!(loaded.count >= 1, "no PT_LOAD segments mapped");
+    assert!(loaded.entry >= 0x2_0000_0000, "user entry VA not in the user window");
+
+    // SAFETY: the entry VA was just mapped EL0-RX, which is readable at EL1.
+    let first = unsafe { (loaded.entry as *const u32).read_volatile() };
+    assert_ne!(first, 0, "entry instruction is zero — segment not populated");
+
+    kprintln!(
+        "user elf: {} segs, entry {:#x}, first insn {:#010x}",
+        loaded.count,
+        loaded.entry,
+        first
+    );
+    uart::write_str("elf load self-check passed\n");
 }
 
 /// Exercise the global allocator. Panics (and so halts) if anything is wrong.
