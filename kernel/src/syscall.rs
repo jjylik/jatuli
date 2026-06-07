@@ -28,12 +28,10 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
         SYS_RING_ENTER => crate::ring::enter(from_user),
         SYS_EXIT => {
             kprintln!("[user] exited with code {}", frame.x[0] as i64);
-            // The process is done; control stays at EL1. Park the CPU here —
-            // we never ERET back to EL0. (Full teardown is a later phase.)
-            loop {
-                // SAFETY: idle until an interrupt; nothing left to run.
-                unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
-            }
+            // The process is done: retire its task and switch away for good.
+            // We never ERET back to EL0; the idle task runs from here on.
+            // (Freeing the user's frames is a later phase.)
+            crate::sched::exit_current()
         }
         other => {
             kprintln!("unknown syscall {}", other);

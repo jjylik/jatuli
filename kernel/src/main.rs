@@ -53,6 +53,20 @@ pub extern "C" fn kmain() -> ! {
     elf_self_check();
     ring_self_check();
 
+    // Run the user program as a schedulable task: the ERET to EL0 happens on
+    // its own kernel stack, so its traps land there and it can block like any
+    // other task. kmain stays behind as the idle task.
+    sched::spawn(user_task, 0);
+    loop {
+        // SAFETY: wait for an interrupt; any IRQ (timer, UART) wakes us.
+        unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
+        sched::yield_now();
+    }
+}
+
+/// The task that hosts the user program. Never returns: after the ERET the
+/// kernel re-enters only via traps, which use this task's stack.
+extern "C" fn user_task(_arg: usize) {
     uart::write_str("entering user mode (EL0)...\n");
     user::enter_user();
 }
