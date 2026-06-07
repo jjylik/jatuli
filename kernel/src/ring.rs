@@ -56,11 +56,16 @@ struct RingState {
     /// Whether the ring page has been mapped (setup is idempotent).
     mapped: bool,
     pending: [Option<Pending>; MAX_PENDING],
+    /// Task blocked in `enter` waiting for completions, woken by
+    /// [`poll_pending`]. Kernel-side state on purpose: the user must not be
+    /// able to forge a wake target through the shared page.
+    waiter: Option<usize>,
 }
 
 static RING: Locked<RingState> = Locked::new(RingState {
     mapped: false,
     pending: [None; MAX_PENDING],
+    waiter: None,
 });
 
 /// A head/tail index in the shared page, viewed as an atomic.
@@ -108,9 +113,15 @@ pub fn setup() -> u64 {
     USER_RING_VA as u64
 }
 
-/// `SYS_RING_ENTER`: consume all published SQEs. Runs with IRQs masked (we are
-/// in a syscall), so it never races [`poll_pending`].
-pub fn enter(from_user: bool) -> u64 {
+/// `SYS_RING_ENTER`: consume all published SQEs, then — like Linux's
+/// `io_uring_enter(min_complete)` — block until the completion queue holds at
+/// least `min_complete` unreaped entries (`0` = submit-only).
+///
+/// Runs with IRQs masked (we are in a syscall), so the drain never races
+/// [`poll_pending`]; IRQs stay masked until the block's `context_switch` lands
+/// in a task that re-enables them, so no completion can slip in between the
+/// recheck and the block (no lost wakeup, single core).
+pub fn enter(from_user: bool, min_complete: u64) -> u64 {
     if !RING.lock().mapped {
         return u64::MAX;
     }
@@ -121,7 +132,21 @@ pub fn enter(from_user: bool) -> u64 {
         head = head.wrapping_add(1);
         index(SQ_HEAD).store(head, Ordering::Release);
     }
-    0
+
+    // Both indices live in the user-writable page: a hostile user can block
+    // themselves forever or not at all — liveness, never safety.
+    loop {
+        let unreaped = index(CQ_TAIL)
+            .load(Ordering::Relaxed)
+            .wrapping_sub(index(CQ_HEAD).load(Ordering::Relaxed));
+        if unreaped as u64 >= min_complete {
+            return 0;
+        }
+        RING.lock().waiter = Some(crate::sched::current());
+        // Lock dropped before blocking: the waking IRQ path needs it.
+        crate::sched::block_current();
+        // Woken: recheck the condition, never trust a wake.
+    }
 }
 
 /// Execute one submission, posting its completion (now, or for a parked
@@ -187,17 +212,25 @@ fn process_sqe(slot: u32, from_user: bool) {
 /// re-fire endlessly — the mask is the flow control).
 pub fn poll_pending() {
     let mut ring = RING.lock();
+    let mut completed = false;
     for slot in ring.pending.iter_mut() {
         if let Some(p) = *slot {
             let count = drain_uart(p.buf, p.len);
             if count > 0 {
                 complete(p.user_data, count as i64);
                 *slot = None;
+                completed = true;
             }
         }
     }
     if ring.pending.iter().all(|s| s.is_none()) {
         uart::set_rx_irq(false);
+    }
+    // New completions may satisfy a task blocked in `enter`: wake it.
+    if completed {
+        if let Some(waiter) = ring.waiter.take() {
+            crate::sched::wake(waiter);
+        }
     }
 }
 

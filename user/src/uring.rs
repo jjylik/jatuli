@@ -72,16 +72,24 @@ pub fn sqe(op: u64, a0: u64, a1: u64, tag: u64) {
     index(SQ_TAIL).store(tail.wrapping_add(1), Ordering::Release);
 }
 
-/// Tell the kernel to process published submissions. One `svc` per batch.
-pub fn submit() {
+/// `SYS_RING_ENTER(min_complete)`: process published submissions, then block
+/// in the kernel until the CQ holds at least `min_complete` unreaped entries.
+fn enter(min_complete: u64) {
     // SAFETY: SYS_RING_ENTER reads only the (already published) ring.
     unsafe {
-        asm!("svc #0", in("x8") SYS_RING_ENTER, in("x0") 0u64, in("x1") 0u64, options(nostack));
+        asm!("svc #0", in("x8") SYS_RING_ENTER, in("x0") min_complete, in("x1") 0u64, options(nostack));
     }
 }
 
-/// Spin until the completion tagged `tag` arrives; returns its result.
-/// Completions for other tags reaped along the way are stashed, not lost.
+/// Tell the kernel to process published submissions. One `svc` per batch.
+pub fn submit() {
+    enter(0);
+}
+
+/// Wait for the completion tagged `tag`; returns its result. When the CQ is
+/// empty we *sleep* in the kernel (`enter(min_complete = 1)`) until a CQE
+/// exists — no spinning. Completions for other tags reaped along the way are
+/// stashed, not lost.
 pub fn wait(tag: u64) -> i64 {
     // Did an earlier wait already reap it?
     for (t, r) in STASH.iter() {
@@ -94,7 +102,7 @@ pub fn wait(tag: u64) -> i64 {
         let head = index(CQ_HEAD).load(Ordering::Relaxed); // we are the only consumer
         let tail = index(CQ_TAIL).load(Ordering::Acquire);
         if head == tail {
-            core::hint::spin_loop();
+            enter(1); // block until at least one completion is available
             continue;
         }
         let p = (ring() + CQ_OFF + (head & MASK) as usize * 16) as *const u64;

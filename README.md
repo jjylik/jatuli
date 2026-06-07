@@ -67,8 +67,8 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI): add, exit, ring setup/enter.
   - `kernel/src/gic.rs` — GICv3 interrupt controller (PPIs + distributor-routed SPIs).
   - `kernel/src/timer.rs` — generic timer (periodic interrupt).
-  - `kernel/src/sched.rs` / `kernel/src/switch.s` — cooperative + preemptive scheduler.
-  - `kernel/src/ring.rs` — `jring`, an io_uring-lite: shared SQ/CQ rings, IRQ-completed reads.
+  - `kernel/src/sched.rs` / `kernel/src/switch.s` — preemptive scheduler with block/wake; hosts the user task.
+  - `kernel/src/ring.rs` — `jring`, an io_uring-lite: shared SQ/CQ rings, IRQ-completed reads, blocking `min_complete` waits.
   - `kernel/src/elf.rs` — minimal ELF64 loader for the embedded user image.
   - `kernel/src/user.rs` — load the user ELF, map a stack, drop to EL0; pointer validation.
   - `kernel/build.rs` — builds the `user` crate and embeds its ELF.

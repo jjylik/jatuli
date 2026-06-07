@@ -14,7 +14,8 @@ pub const SYS_ADD: u64 = 1;
 pub const SYS_EXIT: u64 = 3;
 /// Map (idempotently) the shared jring page; returns its virtual address.
 pub const SYS_RING_SETUP: u64 = 5;
-/// Process all published jring submissions; returns 0.
+/// Process all published jring submissions, then block until the completion
+/// queue holds at least `x0` unreaped entries (0 = submit-only); returns 0.
 pub const SYS_RING_ENTER: u64 = 6;
 // (2 and 4 were SYS_PRINT and SYS_READ; all action I/O now flows through the
 // jring, so the numbers are retired rather than reused.)
@@ -25,7 +26,7 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
     let ret = match frame.x[8] {
         SYS_ADD => frame.x[0].wrapping_add(frame.x[1]),
         SYS_RING_SETUP => crate::ring::setup(),
-        SYS_RING_ENTER => crate::ring::enter(from_user),
+        SYS_RING_ENTER => crate::ring::enter(from_user, frame.x[0]),
         SYS_EXIT => {
             kprintln!("[user] exited with code {}", frame.x[0] as i64);
             // The process is done: retire its task and switch away for good.
