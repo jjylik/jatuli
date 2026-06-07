@@ -57,7 +57,7 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
 - `kernel/` — the kernel crate (`jos`).
   - `kernel/src/boot.s` — `_start`: enables FP/SIMD, sets up the stack, branches to `kmain`.
   - `kernel/src/main.rs` — `kmain` entry point, self-checks, panic handler.
-  - `kernel/src/uart.rs` — PL011 UART driver (TX + polled RX) + `kprint!`/`kprintln!`.
+  - `kernel/src/uart.rs` — PL011 UART driver (TX + RX with on-demand RX interrupt) + `kprint!`/`kprintln!`.
   - `kernel/src/mem.rs` — freestanding `memcpy`/`memset`/`memmove`/`memcmp`.
   - `kernel/src/sync.rs` — `Locked<A>` spinlock.
   - `kernel/src/allocator.rs` — bump heap over a frame-backed virtual window.
@@ -65,7 +65,7 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/src/mmu.rs` — page tables, MMU enable, `map_page`, cache maintenance.
   - `kernel/src/exceptions.rs` / `kernel/src/exceptions.s` — vector table, trap frame, dispatch.
   - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI): add, exit, ring setup/enter.
-  - `kernel/src/gic.rs` — GICv3 interrupt controller.
+  - `kernel/src/gic.rs` — GICv3 interrupt controller (PPIs + distributor-routed SPIs).
   - `kernel/src/timer.rs` — generic timer (periodic interrupt).
   - `kernel/src/sched.rs` / `kernel/src/switch.s` — cooperative + preemptive scheduler.
   - `kernel/src/ring.rs` — `jring`, an io_uring-lite: shared SQ/CQ rings, IRQ-completed reads.

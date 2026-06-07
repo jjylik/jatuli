@@ -43,6 +43,7 @@ pub extern "C" fn kmain() -> ! {
     syscall_self_check();
 
     gic::init(timer::TIMER_INTID);
+    gic::enable_spi(uart::UART_INTID); // UART RX completes parked jring reads
     timer::init();
     irq::enable();
     irq_self_check();

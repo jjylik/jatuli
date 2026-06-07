@@ -17,6 +17,10 @@ const GICR_SGI_BASE: usize = GICR_BASE + 0x1_0000;
 
 // Distributor registers (offset from GICD_BASE).
 const GICD_CTLR: usize = 0x0000;
+const GICD_IGROUPR: usize = 0x0080; // 1 bit per INTID
+const GICD_ISENABLER: usize = 0x0100; // 1 bit per INTID
+const GICD_IPRIORITYR: usize = 0x0400; // 1 byte per INTID
+const GICD_IROUTER: usize = 0x6100; // 1 u64 per SPI, indexed from INTID 32
 
 // Redistributor RD-frame registers (offset from GICR_BASE).
 const GICR_WAKER: usize = 0x0014;
@@ -75,6 +79,29 @@ pub fn init(ppi_intid: u32) {
         // 5. CPU interface: allow all priorities, enable group 1.
         asm!("msr ICC_PMR_EL1, {0}", in(reg) 0xFFu64, options(nostack, preserves_flags));
         asm!("msr ICC_IGRPEN1_EL1, {0}", "isb", in(reg) 1u64, options(nostack, preserves_flags));
+    }
+}
+
+/// Enable a shared peripheral interrupt (SPI, INTID >= 32) and route it to
+/// CPU 0. PPIs/SGIs are per-core and configured in the redistributor (see
+/// [`init`]); SPIs are shared bus interrupts configured in the *distributor*:
+/// group, priority, affinity routing, then enable.
+pub fn enable_spi(intid: u32) {
+    assert!(intid >= 32, "not an SPI");
+    let reg = (intid / 32) as usize * 4;
+    let bit = 1u32 << (intid % 32);
+    // SAFETY: valid distributor MMIO on the virt machine; the GIC is already
+    // initialized (init ran) and these are per-INTID configuration writes.
+    unsafe {
+        // Group 1 (the group our CPU interface has enabled).
+        w32(GICD_BASE, GICD_IGROUPR + reg, r32(GICD_BASE, GICD_IGROUPR + reg) | bit);
+        // Highest priority.
+        write_volatile((GICD_BASE + GICD_IPRIORITYR + intid as usize) as *mut u8, 0x00);
+        // Route to CPU 0 (affinity 0.0.0.0, IRM = 0).
+        let router = (GICD_BASE + GICD_IROUTER + (intid as usize - 32) * 8) as *mut u64;
+        write_volatile(router, 0);
+        // Enable.
+        w32(GICD_BASE, GICD_ISENABLER + reg, bit);
     }
 }
 

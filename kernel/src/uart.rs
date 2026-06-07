@@ -13,6 +13,25 @@ const UARTFR: usize = 0x18;
 const TXFF: u32 = 1 << 5;
 /// Receive-FIFO-empty flag (UARTFR bit 4).
 const RXFE: u32 = 1 << 4;
+/// Interrupt-mask register offset.
+const UARTIMSC: usize = 0x38;
+/// Receive-interrupt mask bit (UARTIMSC bit 4).
+const RXIM: u32 = 1 << 4;
+
+/// INTID of the PL011 UART on the QEMU `virt` machine (SPI 1).
+pub const UART_INTID: u32 = 33;
+
+/// Mask or unmask the receive interrupt. The RX condition is level-asserted
+/// while unread data sits in the receiver (and cleared by reading `UARTDR`),
+/// so the interrupt is enabled only while someone is waiting for input —
+/// otherwise it would re-fire endlessly with nobody to consume the byte.
+pub fn set_rx_irq(enabled: bool) {
+    // SAFETY: valid PL011 MMIO register on the virt machine; volatile write.
+    unsafe {
+        let imsc = (UART0_BASE + UARTIMSC) as *mut u32;
+        write_volatile(imsc, if enabled { RXIM } else { 0 });
+    }
+}
 
 /// Write a single byte, spinning until the TX FIFO has room.
 fn write_byte(b: u8) {

@@ -85,10 +85,13 @@ fn handle_irq() {
     }
     if intid == crate::timer::TIMER_INTID {
         crate::timer::on_tick();
-        crate::ring::poll_pending(); // complete parked jring reads
         crate::gic::eoi(intid); // EOI before switching away
         crate::sched::tick(); // wake sleepers + preempt (IRQs already masked)
         return;
+    }
+    if intid == crate::uart::UART_INTID {
+        // A byte arrived: complete parked jring reads, event-driven.
+        crate::ring::poll_pending();
     }
     crate::gic::eoi(intid);
 }

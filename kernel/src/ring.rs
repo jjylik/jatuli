@@ -168,7 +168,10 @@ fn process_sqe(slot: u32, from_user: bool) {
                         buf: arg0,
                         len: arg1,
                         user_data,
-                    })
+                    });
+                    // Someone is now waiting for input: let the UART interrupt
+                    // us the moment a byte arrives.
+                    uart::set_rx_irq(true);
                 }
                 None => complete(user_data, ERR),
             }
@@ -177,8 +180,11 @@ fn process_sqe(slot: u32, from_user: bool) {
     }
 }
 
-/// Complete parked reads whose input has arrived. Called from the timer IRQ
-/// handler each tick — CQEs land while user code runs, no syscall involved.
+/// Complete parked reads whose input has arrived. Called from the UART RX
+/// interrupt handler — CQEs land the moment a key arrives, while user code
+/// runs, no syscall involved. Masks the RX interrupt again once nothing is
+/// waiting (the RX condition is level-asserted; with no consumer it would
+/// re-fire endlessly — the mask is the flow control).
 pub fn poll_pending() {
     let mut ring = RING.lock();
     for slot in ring.pending.iter_mut() {
@@ -189,6 +195,9 @@ pub fn poll_pending() {
                 *slot = None;
             }
         }
+    }
+    if ring.pending.iter().all(|s| s.is_none()) {
+        uart::set_rx_irq(false);
     }
 }
 
