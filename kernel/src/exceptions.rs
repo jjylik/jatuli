@@ -90,7 +90,9 @@ fn handle_irq() {
         return;
     }
     if intid == crate::uart::UART_INTID {
-        // A byte arrived: complete parked jring reads, event-driven.
+        // Bytes arrived: drain the device into the kernel input buffer
+        // (unconditionally — type-ahead), then complete parked jring reads.
+        crate::input::drain_uart();
         crate::ring::poll_pending();
     }
     crate::gic::eoi(intid);

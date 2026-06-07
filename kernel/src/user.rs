@@ -34,6 +34,30 @@ pub fn is_user_range_writable(ptr: usize, len: usize) -> bool {
     check_user_range(ptr, len, true)
 }
 
+/// Copy kernel bytes into user memory, validating first. Returns false (and
+/// writes nothing) if the destination is not writable user memory.
+///
+/// This is the single, named gate for kernel→user data movement — the jos
+/// analog of Linux's `copy_to_user` (`access_ok` + the copy). On hardened
+/// real-world kernels this function is where the deliberate-access machinery
+/// lives: ARM's PAN is toggled off (or unprivileged `sttr` stores are used)
+/// only inside it, so any *other* kernel dereference of a user pointer faults
+/// instead of becoming an exploit primitive. jos doesn't enable PAN, so the
+/// gate is convention — but every kernel write into user memory goes through
+/// here, which is the structure PAN would enforce.
+pub fn copy_to_user(dst: usize, src: &[u8]) -> bool {
+    if !is_user_range_writable(dst, src.len()) {
+        return false;
+    }
+    let p = dst as *mut u8;
+    for (i, &b) in src.iter().enumerate() {
+        // SAFETY: just validated as writable user memory; same address space,
+        // and PAGE_USER_RW is EL1-writable.
+        unsafe { p.add(i).write_volatile(b) };
+    }
+    true
+}
+
 fn check_user_range(ptr: usize, len: usize, need_write: bool) -> bool {
     let end = match ptr.checked_add(len) {
         Some(e) => e,

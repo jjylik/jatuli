@@ -11,6 +11,7 @@ mod elf;
 mod exceptions;
 mod frames;
 mod gic;
+mod input;
 mod irq;
 mod mem;
 mod mmu;
@@ -43,7 +44,8 @@ pub extern "C" fn kmain() -> ! {
     syscall_self_check();
 
     gic::init(timer::TIMER_INTID);
-    gic::enable_spi(uart::UART_INTID); // UART RX completes parked jring reads
+    gic::enable_spi(uart::UART_INTID);
+    uart::set_rx_irq(true); // always on: input drains to the kernel buffer
     timer::init();
     irq::enable();
     irq_self_check();

@@ -249,8 +249,8 @@ fn process_sqe(slot: u32, from_user: bool) {
                 complete(user_data, 0);
                 return;
             }
-            // Input already waiting completes immediately; otherwise park.
-            let count = drain_uart(arg0, arg1);
+            // Buffered input completes immediately; otherwise park.
+            let count = drain_input(arg0, arg1);
             if count > 0 {
                 complete(user_data, count as i64);
                 return;
@@ -262,10 +262,7 @@ fn process_sqe(slot: u32, from_user: bool) {
                         buf: arg0,
                         len: arg1,
                         user_data,
-                    });
-                    // Someone is now waiting for input: let the UART interrupt
-                    // us the moment a byte arrives.
-                    uart::set_rx_irq(true);
+                    })
                 }
                 None => complete(user_data, ERR),
             }
@@ -274,26 +271,21 @@ fn process_sqe(slot: u32, from_user: bool) {
     }
 }
 
-/// Complete parked reads whose input has arrived. Called from the UART RX
-/// interrupt handler — CQEs land the moment a key arrives, while user code
-/// runs, no syscall involved. Masks the RX interrupt again once nothing is
-/// waiting (the RX condition is level-asserted; with no consumer it would
-/// re-fire endlessly — the mask is the flow control).
+/// Complete parked reads from the kernel input buffer. Called from the UART RX
+/// interrupt handler (after it drained the device into the buffer) — CQEs land
+/// the moment a key arrives, while user code runs, no syscall involved.
 pub fn poll_pending() {
     let mut ring = RING.lock();
     let mut completed = false;
     for slot in ring.pending.iter_mut() {
         if let Some(p) = *slot {
-            let count = drain_uart(p.buf, p.len);
+            let count = drain_input(p.buf, p.len);
             if count > 0 {
                 complete(p.user_data, count as i64);
                 *slot = None;
                 completed = true;
             }
         }
-    }
-    if ring.pending.iter().all(|s| s.is_none()) {
-        uart::set_rx_irq(false);
     }
     // New completions may satisfy a task blocked in `enter`: wake it.
     if completed {
@@ -303,18 +295,22 @@ pub fn poll_pending() {
     }
 }
 
-/// Copy whatever console input is immediately available into `[buf, buf+len)`.
-/// The buffer was validated (or is kernel-trusted) when the SQE was accepted.
-fn drain_uart(buf: usize, len: usize) -> usize {
-    let dst = buf as *mut u8;
+/// Deliver buffered console input into the user range `[buf, buf+len)` via
+/// `copy_to_user`. The ring layer no longer touches the UART: the driver
+/// (`input.rs`) owns the device, this layer owns the user-facing interface.
+fn drain_input(buf: usize, len: usize) -> usize {
     let mut count = 0;
     while count < len {
-        match uart::try_getc() {
-            // SAFETY: validated writable user memory (or kernel-trusted).
-            Some(b) => unsafe {
-                dst.add(count).write_volatile(b);
+        match crate::input::pop() {
+            Some(b) => {
+                // Validated at SQE-accept time; copy_to_user re-checks (the
+                // Linux access_ok-and-copy shape). A failure here would drop
+                // the byte — defense in depth, not an expected path.
+                if !crate::user::copy_to_user(buf + count, &[b]) {
+                    break;
+                }
                 count += 1;
-            },
+            }
             None => break,
         }
     }
