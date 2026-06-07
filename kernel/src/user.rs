@@ -38,22 +38,32 @@ pub fn is_user_range_writable(ptr: usize, len: usize) -> bool {
 /// writes nothing) if the destination is not writable user memory.
 ///
 /// This is the single, named gate for kernel→user data movement — the jos
-/// analog of Linux's `copy_to_user` (`access_ok` + the copy). On hardened
-/// real-world kernels this function is where the deliberate-access machinery
-/// lives: ARM's PAN is toggled off (or unprivileged `sttr` stores are used)
-/// only inside it, so any *other* kernel dereference of a user pointer faults
-/// instead of becoming an exploit primitive. jos doesn't enable PAN, so the
-/// gate is convention — but every kernel write into user memory goes through
-/// here, which is the structure PAN would enforce.
+/// analog of Linux's `copy_to_user` (`access_ok` + the copy). The copy uses
+/// `STTRB`, AArch64's *unprivileged store*: executed at EL1 it performs the
+/// MMU permission check with EL0 rules, exactly as Linux's
+/// `__arch_copy_to_user` does. So even if validation were buggy, the hardware
+/// re-checks every byte — a destination in kernel memory (EL0 no-access) or a
+/// user R-X segment (EL0 read-only) faults loudly (same-EL data abort →
+/// `report_and_halt`) instead of being silently corrupted. On PAN-enabled
+/// kernels (ARMv8.1+; our A72 predates it) the same instructions are also the
+/// only lawful channel to user memory, making this gate hardware-enforced in
+/// both directions. (Linux additionally recovers from such faults via
+/// exception fixup tables rather than halting — a possible later refinement.)
 pub fn copy_to_user(dst: usize, src: &[u8]) -> bool {
     if !is_user_range_writable(dst, src.len()) {
         return false;
     }
-    let p = dst as *mut u8;
     for (i, &b) in src.iter().enumerate() {
-        // SAFETY: just validated as writable user memory; same address space,
-        // and PAGE_USER_RW is EL1-writable.
-        unsafe { p.add(i).write_volatile(b) };
+        // SAFETY: validated above, and STTRB stores with EL0 permissions —
+        // it can only ever succeed on EL0-writable memory.
+        unsafe {
+            asm!(
+                "sttrb {b:w}, [{p}]",
+                b = in(reg) b,
+                p = in(reg) dst + i,
+                options(nostack, preserves_flags),
+            );
+        }
     }
     true
 }

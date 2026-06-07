@@ -48,12 +48,15 @@ moved down a layer and made honest.
 pub fn copy_to_user(dst: usize, src: &[u8]) -> bool
 ```
 
-Validates `is_user_range_writable(dst, src.len())`, then performs the volatile store
-loop through the user VA. False (no partial write) on validation failure. Doc comment
-carries the real-world framing: this is the single auditable gate where the kernel
-writes user memory — the function where hardened kernels toggle PAN or use `sttr`.
-SQE-accept-time validation stays as well; re-checking here is cheap and is the
-correct (Linux `access_ok` + copy) shape.
+Validates `is_user_range_writable(dst, src.len())`, then stores each byte with
+**`STTRB`** — AArch64's unprivileged store, the same instruction family Linux's
+`__arch_copy_to_user` uses. Executed at EL1 it performs the MMU check with EL0
+permissions, so even a validation bug cannot corrupt kernel memory or a user R-X
+segment: a misaimed copy faults loudly (same-EL data abort) instead. False (no partial
+write) on validation failure. SQE-accept-time validation stays as well; re-checking
+here is cheap and is the correct (Linux `access_ok` + copy) shape. Linux additionally
+recovers from uaccess faults via exception fixup tables rather than halting — noted as
+a possible later refinement.
 
 ## Rewiring
 
