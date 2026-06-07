@@ -89,8 +89,14 @@ fn dispatch(line: &[u8]) {
             // SAFETY: SYS_EXIT never returns.
             unsafe { sys_exit(0) }
         }
-        b"help" => print("commands: help spam exit\n"),
+        b"help" => print("commands: help spam crash exit\n"),
         b"spam" => spam(),
+        b"crash" => {
+            // Write to our own R-X code segment: the MMU's W^X enforcement
+            // turns this into a data abort, and the kernel kills us.
+            // SAFETY: deliberately not safe — that's the demo.
+            unsafe { (0x2_0000_0000 as *mut u8).write_volatile(0) }
+        }
         other => {
             print("unknown command: ");
             print_bytes(other);

@@ -186,6 +186,43 @@ pub fn map_page(va: usize, pa: usize, flags: u64) {
     }
 }
 
+/// Remove the 4 KiB mapping at `va`: clear its L3 descriptor and invalidate the
+/// TLB entry. No-op if the address was never mapped (any walk level missing).
+pub fn unmap_page(va: usize) {
+    let ttbr0: u64;
+    // SAFETY: reading a system register has no memory effects.
+    unsafe {
+        asm!("mrs {0}, ttbr0_el1", out(reg) ttbr0, options(nomem, nostack, preserves_flags));
+    }
+    let mut table = (ttbr0 & ADDR_MASK) as *mut u64;
+
+    // Walk L0 -> L2 without creating anything; bail if a level is absent.
+    for shift in [39usize, 30, 21] {
+        let index = (va >> shift) & 0x1FF;
+        // SAFETY: `table` is a live page table of 512 entries; index < 512.
+        let entry = unsafe { table.add(index).read_volatile() };
+        if entry & DESC_TABLE != DESC_TABLE {
+            return;
+        }
+        table = (entry & ADDR_MASK) as *mut u64;
+    }
+
+    let i3 = (va >> 12) & 0x1FF;
+    // SAFETY: `table` is the live L3 table; clearing an entry plus TLB
+    // invalidation is the architectural unmap sequence.
+    unsafe {
+        table.add(i3).write_volatile(0);
+        asm!(
+            "dsb ishst",            // descriptor clear visible to the walker
+            "tlbi vaae1, {page}",   // drop the cached translation
+            "dsb ish",
+            "isb",
+            page = in(reg) (va >> 12) as u64,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 // See B2.6.5 Concurrent modification and execution of instructions in the ARMv8 Architecture Reference Manual
 pub fn sync_instruction_cache(pa: usize, len: usize) {
     const LINE: usize = 64; // Cortex-A72 cache-line size.

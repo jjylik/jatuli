@@ -279,6 +279,19 @@ pub fn poll_pending() {
     }
 }
 
+/// Drop all state referencing the (dying) user program: parked reads point at
+/// buffers that are about to be unmapped, and the waiter task is exiting.
+/// Their CQEs are simply never posted — nobody is left to reap them.
+pub fn abort_user() {
+    let d = crate::irq::disable();
+    {
+        let mut ring = RING.lock();
+        ring.pending = [None; MAX_PENDING];
+        ring.waiter = None;
+    }
+    crate::irq::restore(d);
+}
+
 /// Deliver buffered console input into the user range `[buf, buf+len)` via
 /// `copy_to_user`. The ring layer no longer touches the UART: the driver
 /// (`input.rs`) owns the device, this layer owns the user-facing interface.

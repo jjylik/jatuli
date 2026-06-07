@@ -63,8 +63,8 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/src/sync.rs` — `Locked<A>` spinlock.
   - `kernel/src/allocator.rs` — bump heap over a frame-backed virtual window.
   - `kernel/src/frames.rs` — physical 4 KiB frame allocator (intrusive free-list).
-  - `kernel/src/mmu.rs` — page tables, MMU enable, `map_page`, cache maintenance.
-  - `kernel/src/exceptions.rs` / `kernel/src/exceptions.s` — vector table, trap frame, dispatch.
+  - `kernel/src/mmu.rs` — page tables, MMU enable, `map_page`/`unmap_page`, cache maintenance.
+  - `kernel/src/exceptions.rs` / `kernel/src/exceptions.s` — vector table, trap frame, dispatch; EL0 faults kill the program.
   - `kernel/src/syscall.rs` — `SVC` syscall dispatch (Linux-like ABI): add, exit, ring setup/enter.
   - `kernel/src/gic.rs` — GICv3 interrupt controller (PPIs + distributor-routed SPIs).
   - `kernel/src/timer.rs` — generic timer (periodic interrupt).
@@ -76,7 +76,7 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/build.rs` — builds the `user` crate and embeds its ELF.
   - `kernel/linker.ld` — kernel image at `0x40080000`, stack, `_kernel_end`.
 - `user/` — the EL0 userspace program crate (separately compiled).
-  - `user/src/main.rs` — `jsh`: prompt, line editing, `help`/`spam`/`exit` builtins (I/O via the ring).
+  - `user/src/main.rs` — `jsh`: prompt, line editing, `help`/`spam`/`crash`/`exit` builtins (I/O via the ring).
   - `user/src/uring.rs` — userspace half of `jring`: setup/sqe/submit/wait.
   - `user/user.ld` — EL0 VA layout with separate R-X / R-W segments.
 

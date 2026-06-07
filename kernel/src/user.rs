@@ -7,8 +7,10 @@
 
 use core::arch::asm;
 
+use alloc::vec::Vec;
+
 use crate::elf;
-use crate::frames::{alloc_frame, FRAME_SIZE};
+use crate::frames::{alloc_frame, free_frame, Frame, FRAME_SIZE};
 use crate::mmu::{self, PAGE_USER_RW};
 use crate::sync::Locked;
 
@@ -19,6 +21,10 @@ const USER_STACK_SIZE: usize = FRAME_SIZE;
 
 /// The loaded image's mapped ranges, recorded for pointer validation.
 static LOADED: Locked<Option<elf::Loaded>> = Locked::new(None);
+
+/// Every `(va, frame)` the program owns (segments + stack), recorded at load
+/// time so [`teardown`] can unmap and free them.
+static USER_FRAMES: Locked<Vec<(usize, Frame)>> = Locked::new(Vec::new());
 
 /// Whether `[ptr, ptr + len)` lies entirely within a mapped user segment or the
 /// user stack. Used to validate syscall pointers from EL0.
@@ -91,13 +97,16 @@ fn check_user_range(ptr: usize, len: usize, need_write: bool) -> bool {
 /// Load the embedded user ELF, map a user stack, and drop to EL0 at its entry.
 /// Does not return: the kernel runs only via syscalls/IRQs afterward.
 pub fn enter_user() -> ! {
-    let loaded = elf::load(elf::USER_ELF);
+    let mut owned = Vec::new();
+    let loaded = elf::load(elf::USER_ELF, &mut owned);
     let entry = loaded.entry;
     *LOADED.lock() = Some(loaded);
 
     // Map a user stack page as EL0 read/write.
     let stack = alloc_frame().expect("out of frames for the user stack");
     mmu::map_page(USER_STACK_VA, stack.addr(), PAGE_USER_RW);
+    owned.push((USER_STACK_VA, stack));
+    *USER_FRAMES.lock() = owned;
     let user_sp = USER_STACK_VA + USER_STACK_SIZE;
 
     // SAFETY: segments + stack are mapped EL0-accessible; SPSR selects EL0t with
@@ -114,4 +123,21 @@ pub fn enter_user() -> ! {
             options(noreturn),
         );
     }
+}
+
+/// Reclaim the user program's memory: unmap every page it owned (segments +
+/// stack) and return the frames to the pool. Pointer validation fails closed
+/// afterwards (`LOADED` cleared), and parked ring reads are dropped — their
+/// buffers no longer exist. Shared with exit and fault-kill; the ring page
+/// itself stays (kernel-owned infrastructure, see `ring::setup`).
+pub fn teardown() {
+    crate::ring::abort_user();
+    *LOADED.lock() = None;
+    let owned = core::mem::take(&mut *USER_FRAMES.lock());
+    let count = owned.len();
+    for (va, frame) in owned {
+        mmu::unmap_page(va);
+        free_frame(frame);
+    }
+    crate::kprintln!("[user] freed {} frames", count);
 }

@@ -70,11 +70,33 @@ extern "C" fn exception_dispatch(kind: u64, frame: *mut TrapFrame) {
             match ec {
                 // kind >= 8 means the SVC came from a lower EL (EL0 userspace).
                 EC_SVC => syscall::dispatch(frame, kind >= 8),
+                // Any other sync exception FROM EL0 is the program's bug, not
+                // ours: kill it (the jos SIGSEGV) and keep the kernel running.
+                // Same-EL faults still halt — those are kernel bugs.
+                _ if kind >= 8 => kill_user(esr, frame),
                 _ => report_and_halt(kind, esr, frame),
             }
         }
         _ => report_and_halt(kind, esr, frame),
     }
+}
+
+/// An EL0 fault: report it, reclaim the program's memory, retire its task.
+/// The idle task (and the SQPOLL poller) keep the machine alive.
+fn kill_user(esr: u64, frame: &TrapFrame) -> ! {
+    let ec = (esr >> 26) & 0x3F;
+    let far: u64;
+    // SAFETY: reading a system register has no memory effects.
+    unsafe { asm!("mrs {0}, far_el1", out(reg) far, options(nomem, nostack, preserves_flags)) };
+    kprintln!(
+        "[user] killed: {} (EC {:#04x}), ELR={:#x}, FAR={:#x}",
+        ec_name(ec),
+        ec,
+        frame.elr,
+        far
+    );
+    crate::user::teardown();
+    crate::sched::exit_current()
 }
 
 /// Service an IRQ: acknowledge it at the GIC, dispatch by INTID, then EOI.

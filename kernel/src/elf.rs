@@ -4,7 +4,9 @@
 //! `PT_LOAD` segments at fixed virtual addresses. No relocations, no dynamic
 //! linking, no demand paging.
 
-use crate::frames::{alloc_frame, FRAME_SIZE};
+use alloc::vec::Vec;
+
+use crate::frames::{alloc_frame, Frame, FRAME_SIZE};
 use crate::mmu::{self, PAGE_USER_RW, PAGE_USER_RX};
 
 /// The userspace program's ELF image, built by `build.rs` and embedded here.
@@ -85,8 +87,10 @@ fn align_up(x: usize) -> usize {
 
 /// Map every `PT_LOAD` segment of `image` at its `p_vaddr` with EL0 permissions,
 /// copying file contents in and zero-filling the BSS tail. Returns the entry
-/// point and the mapped ranges. Panics on anything malformed or unsupported.
-pub fn load(image: &[u8]) -> Loaded {
+/// point and the mapped ranges; every `(va, frame)` pair mapped is recorded in
+/// `owned` so teardown can unmap and free the program's memory. Panics on
+/// anything malformed or unsupported.
+pub fn load(image: &[u8], owned: &mut Vec<(usize, Frame)>) -> Loaded {
     let entry = validate(image);
     let phoff = read_u64(image, E_PHOFF) as usize;
     let phentsize = read_u16(image, E_PHENTSIZE) as usize;
@@ -147,6 +151,7 @@ pub fn load(image: &[u8]) -> Loaded {
             }
 
             mmu::map_page(vaddr + page, frame.addr(), perms);
+            owned.push((vaddr + page, frame));
             page += FRAME_SIZE;
         }
 
