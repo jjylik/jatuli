@@ -14,6 +14,7 @@ mod gic;
 mod irq;
 mod mem;
 mod mmu;
+mod ring;
 mod sched;
 mod syscall;
 mod sync;
@@ -49,9 +50,59 @@ pub extern "C" fn kmain() -> ! {
     sched_self_check();
 
     elf_self_check();
+    ring_self_check();
 
     uart::write_str("entering user mode (EL0)...\n");
     user::enter_user();
+}
+
+/// Exercise the jring path from EL1, acting as the ring's user: set it up via
+/// syscall, publish a NOP + PRINT + bad-opcode batch, submit with one
+/// `SYS_RING_ENTER`, and check the three completions (incl. tag matching).
+fn ring_self_check() {
+    // SAFETY: ring syscalls take no pointers from us beyond the SQEs below.
+    let va = unsafe { syscall(syscall::SYS_RING_SETUP, 0, 0) } as usize;
+    assert_eq!(va, ring::USER_RING_VA, "ring page mapped at the wrong VA");
+
+    // Publish three SQEs the way userspace will: write entries, release the tail.
+    let msg = "Hello from the ring!\n";
+    push_sqe(va, 0, ring::OP_NOP, 0, 0, 101);
+    push_sqe(va, 1, ring::OP_PRINT, msg.as_ptr() as u64, msg.len() as u64, 102);
+    push_sqe(va, 2, 99, 0, 0, 103); // invalid opcode -> error completion
+    let sq_tail = (va + 0x04) as *mut u32;
+    // SAFETY: publishing the SQ tail in the mapped ring page.
+    unsafe { core::ptr::write_volatile(sq_tail, 3) };
+
+    // One submission syscall for the whole batch.
+    // SAFETY: the SQEs above are fully written before the tail was published.
+    unsafe { syscall(syscall::SYS_RING_ENTER, 0, 0) };
+
+    // All three ops complete synchronously: expect CQEs (101,0) (102,0) (103,-1).
+    let cq_tail = (va + 0x0c) as *const u32;
+    // SAFETY: reading the published CQ tail.
+    let produced = unsafe { core::ptr::read_volatile(cq_tail) };
+    assert_eq!(produced, 3, "expected three completions");
+    for (i, want) in [(101u64, 0i64), (102, 0), (103, -1)].iter().enumerate() {
+        let p = (va + 0x280 + i * 16) as *const u64;
+        // SAFETY: in-bounds CQE reads in the mapped ring page.
+        let (tag, res) = unsafe { (core::ptr::read_volatile(p), core::ptr::read_volatile(p.add(1)) as i64) };
+        assert_eq!(tag, want.0, "completion tag mismatch");
+        assert_eq!(res, want.1, "completion result mismatch");
+    }
+
+    uart::write_str("ring self-check passed\n");
+}
+
+/// Write one SQE into ring slot `slot` (ring page at `va`).
+fn push_sqe(va: usize, slot: usize, op: u64, a0: u64, a1: u64, tag: u64) {
+    let p = (va + 0x40 + slot * 32) as *mut u64;
+    // SAFETY: in-bounds SQE writes in the mapped ring page.
+    unsafe {
+        p.write_volatile(op);
+        p.add(1).write_volatile(a0);
+        p.add(2).write_volatile(a1);
+        p.add(3).write_volatile(tag);
+    }
 }
 
 /// Validate the embedded userspace ELF header before we try to run it.

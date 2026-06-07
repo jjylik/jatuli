@@ -18,6 +18,10 @@ pub const SYS_EXIT: u64 = 3;
 /// Read from the console: `x0` = buf, `x1` = len. Blocks until at least one
 /// byte is available; returns the number of bytes read.
 pub const SYS_READ: u64 = 4;
+/// Map (idempotently) the shared jring page; returns its virtual address.
+pub const SYS_RING_SETUP: u64 = 5;
+/// Process all published jring submissions; returns 0.
+pub const SYS_RING_ENTER: u64 = 6;
 
 /// Dispatch the syscall described by `frame` (number in `x8`, args in `x0..`).
 /// `from_user` is true when the `SVC` came from EL0, which gates pointer validation.
@@ -26,6 +30,8 @@ pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
         SYS_ADD => frame.x[0].wrapping_add(frame.x[1]),
         SYS_PRINT => sys_print(frame.x[0], frame.x[1], from_user),
         SYS_READ => sys_read(frame.x[0], frame.x[1], from_user),
+        SYS_RING_SETUP => crate::ring::setup(),
+        SYS_RING_ENTER => crate::ring::enter(from_user),
         SYS_EXIT => {
             kprintln!("[user] exited with code {}", frame.x[0] as i64);
             // The process is done; control stays at EL1. Park the CPU here —
