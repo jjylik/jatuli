@@ -137,6 +137,47 @@ pub fn yield_now() {
     irq::restore(d);
 }
 
+/// Index of the currently running task.
+pub fn current() -> usize {
+    let d = irq::disable();
+    let cur = SCHEDULER.lock().current;
+    irq::restore(d);
+    cur
+}
+
+/// Block the current task until an explicit [`wake`]. (`wake_at = u64::MAX`
+/// keeps the time-based waker's hands off it.) Returns once woken; the caller
+/// must re-check its wait condition — never trust a wake.
+pub fn block_current() {
+    let d = irq::disable();
+    {
+        let mut s = SCHEDULER.lock();
+        let cur = s.current;
+        s.tasks[cur].wake_at = u64::MAX;
+        s.tasks[cur].state = State::Blocked;
+    }
+    schedule();
+    irq::restore(d);
+}
+
+/// Make a blocked task runnable again (no-op for any other state). Safe to
+/// call from IRQ context.
+pub fn wake(task: usize) {
+    let d = irq::disable();
+    {
+        let mut s = SCHEDULER.lock();
+        if s.tasks[task].state == State::Blocked {
+            s.tasks[task].state = State::Runnable;
+        }
+    }
+    irq::restore(d);
+}
+
+/// Mark the current task exited and switch away permanently.
+pub fn exit_current() -> ! {
+    task_exit()
+}
+
 /// Block the current thread for `n` timer ticks.
 pub fn sleep_ticks(n: u64) {
     let d = irq::disable();
