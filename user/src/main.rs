@@ -89,12 +89,30 @@ fn dispatch(line: &[u8]) {
             // SAFETY: SYS_EXIT never returns.
             unsafe { sys_exit(0) }
         }
-        b"help" => print("commands: help exit\n"),
+        b"help" => print("commands: help spam exit\n"),
+        b"spam" => spam(),
         other => {
             print("unknown command: ");
             print_bytes(other);
             print("\n");
         }
+    }
+}
+
+/// SQPOLL demo: publish three prints with flag-aware submits (zero syscalls
+/// while the kernel's SQ poller is awake), then spin on the CQ — deliberately
+/// never sleeping in the kernel, so the poller is the only thing that can
+/// consume the submissions. Pure shared-memory I/O.
+fn spam() {
+    let lines = [b"spam 1\n", b"spam 2\n", b"spam 3\n"];
+    let mut tags = [0u64; 3];
+    for (i, line) in lines.iter().enumerate() {
+        tags[i] = tag();
+        uring::sqe(uring::OP_PRINT, line.as_ptr() as u64, line.len() as u64, tags[i]);
+        uring::submit(); // traps only if the poller raised NEED_WAKEUP
+    }
+    for t in tags {
+        uring::wait_spin(t);
     }
 }
 

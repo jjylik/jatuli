@@ -21,8 +21,12 @@ const MASK: u32 = ENTRIES - 1;
 const SQ_TAIL: usize = 0x04;
 const CQ_HEAD: usize = 0x08;
 const CQ_TAIL: usize = 0x0c;
+const FLAGS: usize = 0x10;
 const SQ_OFF: usize = 0x40;
 const CQ_OFF: usize = 0x280;
+
+/// Flags-word bit: the kernel's SQ poller went to sleep; one `enter` revives it.
+const NEED_WAKEUP: u32 = 1;
 
 /// Ring page VA, returned by `SYS_RING_SETUP`. (Lives in our .bss — which also
 /// gives the program a writable PT_LOAD segment, exercising the loader's
@@ -81,9 +85,13 @@ fn enter(min_complete: u64) {
     }
 }
 
-/// Tell the kernel to process published submissions. One `svc` per batch.
+/// Hand published submissions to the kernel. With the SQ poller awake this is
+/// **zero syscalls** — the entries are already visible in shared memory and
+/// the poller will consume them; we only trap if it raised `NEED_WAKEUP`.
 pub fn submit() {
-    enter(0);
+    if index(FLAGS).load(Ordering::Acquire) & NEED_WAKEUP != 0 {
+        enter(0);
+    }
 }
 
 /// Wait for the completion tagged `tag`; returns its result. When the CQ is
@@ -91,6 +99,17 @@ pub fn submit() {
 /// exists — no spinning. Completions for other tags reaped along the way are
 /// stashed, not lost.
 pub fn wait(tag: u64) -> i64 {
+    reap(tag, true)
+}
+
+/// Like [`wait`], but busy-poll the CQ instead of sleeping — no syscall on
+/// this path at all. Demo use only (see jsh's `spam`): with the SQ poller
+/// consuming submissions, publish + spin proves I/O with zero traps.
+pub fn wait_spin(tag: u64) -> i64 {
+    reap(tag, false)
+}
+
+fn reap(tag: u64, block: bool) -> i64 {
     // Did an earlier wait already reap it?
     for (t, r) in STASH.iter() {
         if tag != 0 && t.load(Ordering::Relaxed) == tag {
@@ -102,7 +121,11 @@ pub fn wait(tag: u64) -> i64 {
         let head = index(CQ_HEAD).load(Ordering::Relaxed); // we are the only consumer
         let tail = index(CQ_TAIL).load(Ordering::Acquire);
         if head == tail {
-            enter(1); // block until at least one completion is available
+            if block {
+                enter(1); // sleep until at least one completion is available
+            } else {
+                core::hint::spin_loop();
+            }
             continue;
         }
         let p = (ring() + CQ_OFF + (head & MASK) as usize * 16) as *const u64;

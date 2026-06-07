@@ -68,13 +68,13 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
   - `kernel/src/gic.rs` — GICv3 interrupt controller (PPIs + distributor-routed SPIs).
   - `kernel/src/timer.rs` — generic timer (periodic interrupt).
   - `kernel/src/sched.rs` / `kernel/src/switch.s` — preemptive scheduler with block/wake; hosts the user task.
-  - `kernel/src/ring.rs` — `jring`, an io_uring-lite: shared SQ/CQ rings, IRQ-completed reads, blocking `min_complete` waits.
+  - `kernel/src/ring.rs` — `jring`, an io_uring-lite: shared SQ/CQ rings, IRQ-completed reads, blocking `min_complete` waits, SQPOLL task.
   - `kernel/src/elf.rs` — minimal ELF64 loader for the embedded user image.
   - `kernel/src/user.rs` — load the user ELF, map a stack, drop to EL0; pointer validation.
   - `kernel/build.rs` — builds the `user` crate and embeds its ELF.
   - `kernel/linker.ld` — kernel image at `0x40080000`, stack, `_kernel_end`.
 - `user/` — the EL0 userspace program crate (separately compiled).
-  - `user/src/main.rs` — `jsh`: prompt, line editing, `help`/`exit` builtins (I/O via the ring).
+  - `user/src/main.rs` — `jsh`: prompt, line editing, `help`/`spam`/`exit` builtins (I/O via the ring).
   - `user/src/uring.rs` — userspace half of `jring`: setup/sqe/submit/wait.
   - `user/user.ld` — EL0 VA layout with separate R-X / R-W segments.
 
