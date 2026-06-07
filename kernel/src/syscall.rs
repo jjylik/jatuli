@@ -8,17 +8,10 @@
 use crate::exceptions::TrapFrame;
 use crate::kprintln;
 
-/// Add two arguments: `x0 + x1 -> x0`. (Demo syscall.)
-pub const SYS_ADD: u64 = 1;
-/// Terminate the user program: `x0` = exit code. Does not return to EL0.
-pub const SYS_EXIT: u64 = 3;
-/// Map (idempotently) the shared jring page; returns its virtual address.
-pub const SYS_RING_SETUP: u64 = 5;
-/// Process all published jring submissions, then block until the completion
-/// queue holds at least `x0` unreaped entries (0 = submit-only); returns 0.
-pub const SYS_RING_ENTER: u64 = 6;
-// (2 and 4 were SYS_PRINT and SYS_READ; all action I/O now flows through the
-// jring, so the numbers are retired rather than reused.)
+// The numbers (and their docs) live in the shared `abi` crate — the
+// kernel/userspace contract; re-exported so kernel code keeps reading
+// naturally as `syscall::SYS_*`.
+pub use abi::{SYS_ADD, SYS_EXIT, SYS_RING_ENTER, SYS_RING_SETUP};
 
 /// Dispatch the syscall described by `frame` (number in `x8`, args in `x0..`).
 /// `from_user` is true when the `SVC` came from EL0, which gates pointer validation.

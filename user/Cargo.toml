@@ -6,3 +6,6 @@ edition = "2021"
 [[bin]]
 name = "user"
 path = "src/main.rs"
+
+[dependencies]
+abi = { path = "../abi" }

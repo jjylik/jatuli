@@ -1,32 +1,18 @@
 //! Userspace half of `jring` (a ~60-line liburing).
 //!
-//! The kernel maps one shared page holding a submission queue (we produce,
-//! kernel consumes) and a completion queue (kernel produces, we consume).
-//! [`sqe`] writes are plain memory stores; [`submit`] is the only syscall, and
-//! a parked `READ` completes later from the kernel's timer interrupt — the CQE
-//! appears in [`wait`]'s spin with no syscall at all.
+//! The page layout, opcodes, and syscall numbers come from the shared `abi`
+//! crate — the same definitions the kernel compiles against, so the two sides
+//! cannot drift. [`sqe`] writes are plain memory stores; [`submit`] traps only
+//! when the kernel's SQ poller raised `NEED_WAKEUP`, and a parked `READ`
+//! completes from the kernel's UART interrupt — the CQE simply appears in
+//! shared memory.
 
 use core::arch::asm;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-const SYS_RING_SETUP: u64 = 5;
-const SYS_RING_ENTER: u64 = 6;
+use abi::{RingPage, NEED_WAKEUP, RING_MASK, SYS_RING_ENTER, SYS_RING_SETUP};
 
-pub const OP_NOP: u64 = 0;
-pub const OP_PRINT: u64 = 1;
-pub const OP_READ: u64 = 2;
-
-const ENTRIES: u32 = 16;
-const MASK: u32 = ENTRIES - 1;
-const SQ_TAIL: usize = 0x04;
-const CQ_HEAD: usize = 0x08;
-const CQ_TAIL: usize = 0x0c;
-const FLAGS: usize = 0x10;
-const SQ_OFF: usize = 0x40;
-const CQ_OFF: usize = 0x280;
-
-/// Flags-word bit: the kernel's SQ poller went to sleep; one `enter` revives it.
-const NEED_WAKEUP: u32 = 1;
+pub use abi::{OP_NOP, OP_PRINT, OP_READ};
 
 /// Ring page VA, returned by `SYS_RING_SETUP`. (Lives in our .bss — which also
 /// gives the program a writable PT_LOAD segment, exercising the loader's
@@ -42,13 +28,12 @@ static STASH: [(AtomicU64, AtomicU64); 4] = [
     (AtomicU64::new(0), AtomicU64::new(0)),
 ];
 
-fn ring() -> usize {
-    RING_VA.load(Ordering::Relaxed)
-}
-
-fn index(off: usize) -> &'static AtomicU32 {
-    // SAFETY: the four ring indices are aligned u32s in the mapped ring page.
-    unsafe { &*((ring() + off) as *const AtomicU32) }
+/// The shared ring page, typed. The ONE place in userspace where the ring's
+/// raw address becomes a reference; sound only after [`setup`] stored the VA.
+fn page() -> &'static RingPage {
+    // SAFETY: setup() mapped the page and recorded its address; all fields
+    // are atomics, so sharing with the kernel through &-references is sound.
+    unsafe { &*(RING_VA.load(Ordering::Relaxed) as *const RingPage) }
 }
 
 /// Map the ring (idempotent) and remember where it lives. Call once at startup.
@@ -64,16 +49,14 @@ pub fn setup() {
 /// Queue one submission: write the SQE, then publish it with a release store
 /// of the tail (the kernel acquires the tail before reading entries).
 pub fn sqe(op: u64, a0: u64, a1: u64, tag: u64) {
-    let tail = index(SQ_TAIL).load(Ordering::Relaxed); // we are the only producer
-    let p = (ring() + SQ_OFF + (tail & MASK) as usize * 32) as *mut u64;
-    // SAFETY: in-bounds SQE slot in the mapped ring page.
-    unsafe {
-        p.write_volatile(op);
-        p.add(1).write_volatile(a0);
-        p.add(2).write_volatile(a1);
-        p.add(3).write_volatile(tag);
-    }
-    index(SQ_TAIL).store(tail.wrapping_add(1), Ordering::Release);
+    let p = page();
+    let tail = p.sq_tail.load(Ordering::Relaxed); // we are the only producer
+    let e = &p.sq[(tail & RING_MASK) as usize];
+    e.opcode.store(op, Ordering::Relaxed);
+    e.arg0.store(a0, Ordering::Relaxed);
+    e.arg1.store(a1, Ordering::Relaxed);
+    e.user_data.store(tag, Ordering::Relaxed);
+    p.sq_tail.store(tail.wrapping_add(1), Ordering::Release);
 }
 
 /// `SYS_RING_ENTER(min_complete)`: process published submissions, then block
@@ -89,7 +72,7 @@ fn enter(min_complete: u64) {
 /// **zero syscalls** — the entries are already visible in shared memory and
 /// the poller will consume them; we only trap if it raised `NEED_WAKEUP`.
 pub fn submit() {
-    if index(FLAGS).load(Ordering::Acquire) & NEED_WAKEUP != 0 {
+    if page().flags.load(Ordering::Acquire) & NEED_WAKEUP != 0 {
         enter(0);
     }
 }
@@ -117,9 +100,10 @@ fn reap(tag: u64, block: bool) -> i64 {
             return r.load(Ordering::Relaxed) as i64;
         }
     }
+    let p = page();
     loop {
-        let head = index(CQ_HEAD).load(Ordering::Relaxed); // we are the only consumer
-        let tail = index(CQ_TAIL).load(Ordering::Acquire);
+        let head = p.cq_head.load(Ordering::Relaxed); // we are the only consumer
+        let tail = p.cq_tail.load(Ordering::Acquire);
         if head == tail {
             if block {
                 enter(1); // sleep until at least one completion is available
@@ -128,10 +112,12 @@ fn reap(tag: u64, block: bool) -> i64 {
             }
             continue;
         }
-        let p = (ring() + CQ_OFF + (head & MASK) as usize * 16) as *const u64;
-        // SAFETY: in-bounds CQE slot, published by the release store of cq_tail.
-        let (got, res) = unsafe { (p.read_volatile(), p.add(1).read_volatile() as i64) };
-        index(CQ_HEAD).store(head.wrapping_add(1), Ordering::Release);
+        let cqe = &p.cq[(head & RING_MASK) as usize];
+        let (got, res) = (
+            cqe.user_data.load(Ordering::Relaxed),
+            cqe.result.load(Ordering::Relaxed),
+        );
+        p.cq_head.store(head.wrapping_add(1), Ordering::Release);
         if got == tag {
             return res;
         }

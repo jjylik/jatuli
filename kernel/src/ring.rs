@@ -1,50 +1,27 @@
 //! `jring`: an io_uring-lite over a shared ring page.
 //!
-//! One 4 KiB page, mapped EL0-RW at [`USER_RING_VA`], holds a submission queue
-//! (user produces, kernel consumes) and a completion queue (kernel produces,
-//! user consumes). The user batches SQEs and makes one `SYS_RING_ENTER` call;
-//! `NOP`/`PRINT` complete immediately, while a `READ` with no input waiting is
-//! parked in a pending table and completed later **from the timer interrupt**,
-//! while user code runs — asynchronous completion with no syscall involved.
+//! The page layout and all shared constants live in the `abi` crate — the
+//! kernel/userspace contract. This module is the kernel half: it consumes
+//! SQEs (submission queue entries), posts CQEs (completion queue entries),
+//! parks reads until input arrives, hosts the SQPOLL submission-poller task,
+//! and blocks `enter(min_complete)` callers until completions exist.
 //!
-//! Index discipline (mirrors io_uring): head/tail are free-running `u32`s
-//! masked by `ENTRIES - 1`; a producer publishes entries with a release store
-//! of its tail, a consumer reads the tail with acquire before the entries.
+//! `NOP`/`PRINT` complete immediately; a `READ` with no buffered input is
+//! parked in a pending table and completed later from the UART receive
+//! interrupt, while user code runs — asynchronous completion, no syscall.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
+
+use abi::{Cqe, RingPage, Sqe, NEED_WAKEUP, OP_NOP, OP_PRINT, OP_READ, RING_ENTRIES, RING_MASK, USER_RING_VA};
 
 use crate::frames::alloc_frame;
 use crate::mmu::{self, PAGE_USER_RW};
 use crate::sync::Locked;
 use crate::uart;
 
-/// Virtual address of the shared ring page (above the user stack).
-pub const USER_RING_VA: usize = 0x2_0030_0000;
-
-/// Entries in each ring (power of two).
-const ENTRIES: u32 = 16;
-const MASK: u32 = ENTRIES - 1;
-
-// Byte offsets within the ring page.
-const SQ_HEAD: usize = 0x00;
-const SQ_TAIL: usize = 0x04;
-const CQ_HEAD: usize = 0x08;
-const CQ_TAIL: usize = 0x0c;
-const FLAGS: usize = 0x10;
-const SQ_OFF: usize = 0x40; // 16 x 32-byte SQEs
-const CQ_OFF: usize = 0x280; // 16 x 16-byte CQEs
-
-/// Flags-word bit: the poller went to sleep; submitters must call
-/// `SYS_RING_ENTER` once to revive it (Linux's `IORING_SQ_NEED_WAKEUP`).
-pub const NEED_WAKEUP: u32 = 1;
-
-/// Ticks without work before the poller goes to sleep (`sq_thread_idle`).
+/// Ticks without work before the SQPOLL task goes to sleep (the
+/// `sq_thread_idle` analog).
 const SQ_IDLE_TICKS: u64 = 5;
-
-// SQE opcodes.
-pub const OP_NOP: u64 = 0;
-pub const OP_PRINT: u64 = 1;
-pub const OP_READ: u64 = 2;
 
 /// CQE result for an invalid pointer, opcode, or a full pending table.
 const ERR: i64 = -1;
@@ -52,8 +29,11 @@ const ERR: i64 = -1;
 /// A parked `READ` awaiting console input.
 #[derive(Clone, Copy)]
 struct Pending {
+    /// User-space destination buffer (virtual address), validated at accept.
     buf: usize,
+    /// Capacity of that buffer in bytes.
     len: usize,
+    /// The request's completion tag, echoed in its CQE.
     user_data: u64,
 }
 
@@ -79,36 +59,35 @@ static RING: Locked<RingState> = Locked::new(RingState {
     poller: None,
 });
 
-/// A head/tail index in the shared page, viewed as an atomic.
-fn index(off: usize) -> &'static AtomicU32 {
-    // SAFETY: the ring page is mapped and the four indices are aligned u32s;
-    // AtomicU32 gives both sides ordered access to the same memory.
-    unsafe { &*((USER_RING_VA + off) as *const AtomicU32) }
+/// The shared ring page, typed. The ONE place in the kernel where the ring's
+/// raw address becomes a reference; sound only after [`setup`] mapped it —
+/// every public entry point is gated on `RingState::mapped`.
+fn page() -> &'static RingPage {
+    // SAFETY: the page is mapped (callers check `mapped`), 4 KiB, and lives
+    // for the rest of the kernel's life; all fields are atomics, so shared
+    // mutation from EL0/IRQ context through &-references is sound.
+    unsafe { &*(USER_RING_VA as *const RingPage) }
 }
 
-/// Read field `n` (of 4) of the SQE at ring slot `slot`.
-fn sqe_field(slot: u32, n: usize) -> u64 {
-    let p = (USER_RING_VA + SQ_OFF + (slot & MASK) as usize * 32 + n * 8) as *const u64;
-    // SAFETY: in-bounds within the mapped ring page.
-    unsafe { p.read_volatile() }
+/// Slot for a free-running index.
+fn slot(index: u32) -> usize {
+    (index & RING_MASK) as usize
 }
 
 /// Post a completion: write the CQE, then publish with a release store of the
 /// tail so the user sees the entry before the index moves.
 fn complete(user_data: u64, result: i64) {
-    let tail = index(CQ_TAIL).load(Ordering::Relaxed);
-    let head = index(CQ_HEAD).load(Ordering::Acquire);
-    if tail.wrapping_sub(head) >= ENTRIES {
+    let p = page();
+    let tail = p.cq_tail.load(Ordering::Relaxed);
+    let head = p.cq_head.load(Ordering::Acquire);
+    if tail.wrapping_sub(head) >= RING_ENTRIES {
         crate::kprintln!("jring: completion queue overflow, dropping CQE");
         return;
     }
-    let p = (USER_RING_VA + CQ_OFF + (tail & MASK) as usize * 16) as *mut u64;
-    // SAFETY: in-bounds within the mapped ring page.
-    unsafe {
-        p.write_volatile(user_data);
-        p.add(1).write_volatile(result as u64);
-    }
-    index(CQ_TAIL).store(tail.wrapping_add(1), Ordering::Release);
+    let cqe: &Cqe = &p.cq[slot(tail)];
+    cqe.user_data.store(user_data, Ordering::Relaxed);
+    cqe.result.store(result, Ordering::Relaxed);
+    p.cq_tail.store(tail.wrapping_add(1), Ordering::Release);
 }
 
 /// `SYS_RING_SETUP`: map and zero the ring page (idempotent). Returns its VA.
@@ -140,8 +119,8 @@ pub fn enter(from_user: bool, min_complete: u64) -> u64 {
     // The poller went to sleep and a submitter trapped in to revive it: wake
     // it and clear the flag HERE, not when the poller runs — otherwise every
     // submit until its next timeslice would see the flag and trap too.
-    if index(FLAGS).load(Ordering::Acquire) & NEED_WAKEUP != 0 {
-        index(FLAGS).store(0, Ordering::Release);
+    if page().flags.load(Ordering::Acquire) & NEED_WAKEUP != 0 {
+        page().flags.store(0, Ordering::Release);
         let poller = RING.lock().poller;
         if let Some(p) = poller {
             crate::sched::wake(p);
@@ -153,10 +132,11 @@ pub fn enter(from_user: bool, min_complete: u64) -> u64 {
     // Both indices live in the user-writable page: a hostile user can block
     // themselves forever or not at all — liveness, never safety.
     loop {
-        let unreaped = index(CQ_TAIL)
+        let unreaped = page()
+            .cq_tail
             .load(Ordering::Relaxed)
-            .wrapping_sub(index(CQ_HEAD).load(Ordering::Relaxed));
-        if unreaped as u64 >= min_complete {
+            .wrapping_sub(page().cq_head.load(Ordering::Relaxed));
+        if u64::from(unreaped) >= min_complete {
             return 0;
         }
         RING.lock().waiter = Some(crate::sched::current());
@@ -171,13 +151,14 @@ pub fn enter(from_user: bool, min_complete: u64) -> u64 {
 /// (preemptible) SQPOLL task — and per-SQE processing must not interleave.
 fn drain(from_user: bool) -> bool {
     let d = crate::irq::disable();
-    let mut head = index(SQ_HEAD).load(Ordering::Relaxed);
-    let tail = index(SQ_TAIL).load(Ordering::Acquire);
+    let p = page();
+    let mut head = p.sq_head.load(Ordering::Relaxed);
+    let tail = p.sq_tail.load(Ordering::Acquire);
     let worked = head != tail;
     while head != tail {
-        process_sqe(head, from_user);
+        process_sqe(&p.sq[slot(head)], from_user);
         head = head.wrapping_add(1);
-        index(SQ_HEAD).store(head, Ordering::Release);
+        p.sq_head.store(head, Ordering::Release);
     }
     crate::irq::restore(d);
     worked
@@ -204,9 +185,9 @@ pub extern "C" fn sqpoll_main(_arg: usize) {
             // the flag FIRST, then drain once more — any SQE published just
             // before the flag went up is caught here; any published after it
             // sees NEED_WAKEUP and traps to wake us.
-            index(FLAGS).store(NEED_WAKEUP, Ordering::Release);
+            page().flags.store(NEED_WAKEUP, Ordering::Release);
             if drain(true) {
-                index(FLAGS).store(0, Ordering::Release);
+                page().flags.store(0, Ordering::Release);
             } else {
                 crate::sched::block_current();
                 // enter() cleared the flag when it woke us.
@@ -219,12 +200,12 @@ pub extern "C" fn sqpoll_main(_arg: usize) {
 }
 
 /// Execute one submission, posting its completion (now, or for a parked
-/// `READ`, later from the timer IRQ).
-fn process_sqe(slot: u32, from_user: bool) {
-    let opcode = sqe_field(slot, 0);
-    let arg0 = sqe_field(slot, 1) as usize;
-    let arg1 = sqe_field(slot, 2) as usize;
-    let user_data = sqe_field(slot, 3);
+/// `READ`, later from the UART receive interrupt).
+fn process_sqe(sqe: &Sqe, from_user: bool) {
+    let opcode = sqe.opcode.load(Ordering::Relaxed);
+    let arg0 = sqe.arg0.load(Ordering::Relaxed) as usize;
+    let arg1 = sqe.arg1.load(Ordering::Relaxed) as usize;
+    let user_data = sqe.user_data.load(Ordering::Relaxed);
 
     match opcode {
         OP_NOP => complete(user_data, 0),
@@ -276,6 +257,9 @@ fn process_sqe(slot: u32, from_user: bool) {
 /// the moment a key arrives, while user code runs, no syscall involved.
 pub fn poll_pending() {
     let mut ring = RING.lock();
+    if !ring.mapped {
+        return; // input can arrive before the ring exists
+    }
     let mut completed = false;
     for slot in ring.pending.iter_mut() {
         if let Some(p) = *slot {

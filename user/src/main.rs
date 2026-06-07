@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 // All "action" I/O flows through the jring (see uring.rs); the only plain
 // syscall left for us is exit, which by nature cannot complete via the ring.
-const SYS_EXIT: u64 = 3;
+use abi::SYS_EXIT;
 
 const MAX_LINE: usize = 128;
 

@@ -54,6 +54,7 @@ trap frame + `SVC` syscalls → GICv3 + timer interrupts.
 
 ## Layout
 
+- `abi/` — the kernel/userspace ABI contract: syscall numbers, jring page layout (`#[repr(C)]` + compile-time layout asserts), opcodes, flags.
 - `kernel/` — the kernel crate (`jos`).
   - `kernel/src/boot.s` — `_start`: enables FP/SIMD, sets up the stack, branches to `kmain`.
   - `kernel/src/main.rs` — `kmain` entry point, self-checks, panic handler.

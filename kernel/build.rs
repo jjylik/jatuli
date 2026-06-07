@@ -38,6 +38,8 @@ fn main() {
     println!("cargo:rustc-env=USER_ELF={}", elf.display());
 
     println!("cargo:rerun-if-changed={}", user_dir.join("src").display());
+    // The user ELF also embeds the shared ABI crate.
+    println!("cargo:rerun-if-changed={}", workspace.join("abi").join("src").display());
     println!("cargo:rerun-if-changed={}", user_dir.join("Cargo.toml").display());
     println!("cargo:rerun-if-changed={}", user_dir.join("user.ld").display());
     println!("cargo:rerun-if-changed={}", user_dir.join("build.rs").display());

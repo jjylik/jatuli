@@ -81,49 +81,46 @@ extern "C" fn user_task(_arg: usize) {
 /// syscall, publish a NOP + PRINT + bad-opcode batch, submit with one
 /// `SYS_RING_ENTER`, and check the three completions (incl. tag matching).
 fn ring_self_check() {
+    use core::sync::atomic::Ordering;
+
     // SAFETY: ring syscalls take no pointers from us beyond the SQEs below.
     let va = unsafe { syscall(syscall::SYS_RING_SETUP, 0, 0) } as usize;
-    assert_eq!(va, ring::USER_RING_VA, "ring page mapped at the wrong VA");
+    assert_eq!(va, abi::USER_RING_VA, "ring page mapped at the wrong VA");
+    // SAFETY: setup just mapped the 4 KiB ring page at this address; the
+    // typed view (all-atomic fields) is how userspace will see it too.
+    let page = unsafe { &*(va as *const abi::RingPage) };
 
     // Publish three SQEs the way userspace will: write entries, release the tail.
     let msg = "Hello from the ring!\n";
-    push_sqe(va, 0, ring::OP_NOP, 0, 0, 101);
-    push_sqe(va, 1, ring::OP_PRINT, msg.as_ptr() as u64, msg.len() as u64, 102);
-    push_sqe(va, 2, 99, 0, 0, 103); // invalid opcode -> error completion
-    let sq_tail = (va + 0x04) as *mut u32;
-    // SAFETY: publishing the SQ tail in the mapped ring page.
-    unsafe { core::ptr::write_volatile(sq_tail, 3) };
+    push_sqe(&page.sq[0], abi::OP_NOP, 0, 0, 101);
+    push_sqe(&page.sq[1], abi::OP_PRINT, msg.as_ptr() as u64, msg.len() as u64, 102);
+    push_sqe(&page.sq[2], 99, 0, 0, 103); // invalid opcode -> error completion
+    page.sq_tail.store(3, Ordering::Release);
 
     // One submission syscall for the whole batch.
     // SAFETY: the SQEs above are fully written before the tail was published.
     unsafe { syscall(syscall::SYS_RING_ENTER, 0, 0) };
 
     // All three ops complete synchronously: expect CQEs (101,0) (102,0) (103,-1).
-    let cq_tail = (va + 0x0c) as *const u32;
-    // SAFETY: reading the published CQ tail.
-    let produced = unsafe { core::ptr::read_volatile(cq_tail) };
+    let produced = page.cq_tail.load(Ordering::Acquire);
     assert_eq!(produced, 3, "expected three completions");
     for (i, want) in [(101u64, 0i64), (102, 0), (103, -1)].iter().enumerate() {
-        let p = (va + 0x280 + i * 16) as *const u64;
-        // SAFETY: in-bounds CQE reads in the mapped ring page.
-        let (tag, res) = unsafe { (core::ptr::read_volatile(p), core::ptr::read_volatile(p.add(1)) as i64) };
-        assert_eq!(tag, want.0, "completion tag mismatch");
-        assert_eq!(res, want.1, "completion result mismatch");
+        let cqe = &page.cq[i];
+        assert_eq!(cqe.user_data.load(Ordering::Relaxed), want.0, "completion tag mismatch");
+        assert_eq!(cqe.result.load(Ordering::Relaxed), want.1, "completion result mismatch");
     }
 
     uart::write_str("ring self-check passed\n");
 }
 
-/// Write one SQE into ring slot `slot` (ring page at `va`).
-fn push_sqe(va: usize, slot: usize, op: u64, a0: u64, a1: u64, tag: u64) {
-    let p = (va + 0x40 + slot * 32) as *mut u64;
-    // SAFETY: in-bounds SQE writes in the mapped ring page.
-    unsafe {
-        p.write_volatile(op);
-        p.add(1).write_volatile(a0);
-        p.add(2).write_volatile(a1);
-        p.add(3).write_volatile(tag);
-    }
+/// Fill one SQE (submission queue entry) the way userspace does: relaxed
+/// stores, published afterwards by the caller's release of `sq_tail`.
+fn push_sqe(sqe: &abi::Sqe, op: u64, a0: u64, a1: u64, tag: u64) {
+    use core::sync::atomic::Ordering;
+    sqe.opcode.store(op, Ordering::Relaxed);
+    sqe.arg0.store(a0, Ordering::Relaxed);
+    sqe.arg1.store(a1, Ordering::Relaxed);
+    sqe.user_data.store(tag, Ordering::Relaxed);
 }
 
 /// Validate the embedded userspace ELF header before we try to run it.
