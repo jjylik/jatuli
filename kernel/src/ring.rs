@@ -30,8 +30,16 @@ const SQ_HEAD: usize = 0x00;
 const SQ_TAIL: usize = 0x04;
 const CQ_HEAD: usize = 0x08;
 const CQ_TAIL: usize = 0x0c;
+const FLAGS: usize = 0x10;
 const SQ_OFF: usize = 0x40; // 16 x 32-byte SQEs
 const CQ_OFF: usize = 0x280; // 16 x 16-byte CQEs
+
+/// Flags-word bit: the poller went to sleep; submitters must call
+/// `SYS_RING_ENTER` once to revive it (Linux's `IORING_SQ_NEED_WAKEUP`).
+pub const NEED_WAKEUP: u32 = 1;
+
+/// Ticks without work before the poller goes to sleep (`sq_thread_idle`).
+const SQ_IDLE_TICKS: u64 = 5;
 
 // SQE opcodes.
 pub const OP_NOP: u64 = 0;
@@ -60,12 +68,15 @@ struct RingState {
     /// [`poll_pending`]. Kernel-side state on purpose: the user must not be
     /// able to forge a wake target through the shared page.
     waiter: Option<usize>,
+    /// The SQPOLL task, woken by `enter` when `NEED_WAKEUP` was set.
+    poller: Option<usize>,
 }
 
 static RING: Locked<RingState> = Locked::new(RingState {
     mapped: false,
     pending: [None; MAX_PENDING],
     waiter: None,
+    poller: None,
 });
 
 /// A head/tail index in the shared page, viewed as an atomic.
@@ -125,13 +136,19 @@ pub fn enter(from_user: bool, min_complete: u64) -> u64 {
     if !RING.lock().mapped {
         return u64::MAX;
     }
-    let mut head = index(SQ_HEAD).load(Ordering::Relaxed);
-    let tail = index(SQ_TAIL).load(Ordering::Acquire);
-    while head != tail {
-        process_sqe(head, from_user);
-        head = head.wrapping_add(1);
-        index(SQ_HEAD).store(head, Ordering::Release);
+
+    // The poller went to sleep and a submitter trapped in to revive it: wake
+    // it and clear the flag HERE, not when the poller runs — otherwise every
+    // submit until its next timeslice would see the flag and trap too.
+    if index(FLAGS).load(Ordering::Acquire) & NEED_WAKEUP != 0 {
+        index(FLAGS).store(0, Ordering::Release);
+        let poller = RING.lock().poller;
+        if let Some(p) = poller {
+            crate::sched::wake(p);
+        }
     }
+
+    drain(from_user);
 
     // Both indices live in the user-writable page: a hostile user can block
     // themselves forever or not at all — liveness, never safety.
@@ -146,6 +163,58 @@ pub fn enter(from_user: bool, min_complete: u64) -> u64 {
         // Lock dropped before blocking: the waking IRQ path needs it.
         crate::sched::block_current();
         // Woken: recheck the condition, never trust a wake.
+    }
+}
+
+/// Consume all published SQEs; returns whether any work was done. Runs with
+/// IRQs disabled: it has two callers — the `enter` syscall and the
+/// (preemptible) SQPOLL task — and per-SQE processing must not interleave.
+fn drain(from_user: bool) -> bool {
+    let d = crate::irq::disable();
+    let mut head = index(SQ_HEAD).load(Ordering::Relaxed);
+    let tail = index(SQ_TAIL).load(Ordering::Acquire);
+    let worked = head != tail;
+    while head != tail {
+        process_sqe(head, from_user);
+        head = head.wrapping_add(1);
+        index(SQ_HEAD).store(head, Ordering::Release);
+    }
+    crate::irq::restore(d);
+    worked
+}
+
+/// The SQPOLL task: poll the submission queue so published SQEs are consumed
+/// with no syscall at all. After [`SQ_IDLE_TICKS`] without work it raises
+/// `NEED_WAKEUP` and sleeps; submitters seeing that flag trap once to revive
+/// it (the handshake itself runs through shared memory).
+pub extern "C" fn sqpoll_main(_arg: usize) {
+    RING.lock().poller = Some(crate::sched::current());
+    let mut announced = false;
+    let mut last_work = crate::timer::ticks();
+    loop {
+        if drain(true) {
+            // SQEs always come from EL0 publishes, hence from_user = true.
+            if !announced {
+                crate::kprintln!("[sqpoll] picked up work");
+                announced = true;
+            }
+            last_work = crate::timer::ticks();
+        } else if crate::timer::ticks().wrapping_sub(last_work) >= SQ_IDLE_TICKS {
+            // Going to sleep. Order matters (the lost-wakeup window): raise
+            // the flag FIRST, then drain once more — any SQE published just
+            // before the flag went up is caught here; any published after it
+            // sees NEED_WAKEUP and traps to wake us.
+            index(FLAGS).store(NEED_WAKEUP, Ordering::Release);
+            if drain(true) {
+                index(FLAGS).store(0, Ordering::Release);
+            } else {
+                crate::sched::block_current();
+                // enter() cleared the flag when it woke us.
+            }
+            last_work = crate::timer::ticks();
+        }
+        // Single core: give the producer its turn between polls.
+        crate::sched::yield_now();
     }
 }
 

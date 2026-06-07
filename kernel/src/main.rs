@@ -53,6 +53,10 @@ pub extern "C" fn kmain() -> ! {
     elf_self_check();
     ring_self_check();
 
+    // SQPOLL: a kernel task that polls the submission queue, so published
+    // SQEs are consumed without any syscall (it sleeps via NEED_WAKEUP when idle).
+    sched::spawn(ring::sqpoll_main, 0);
+
     // Run the user program as a schedulable task: the ERET to EL0 happens on
     // its own kernel stack, so its traps land there and it can block like any
     // other task. kmain stays behind as the idle task.
