@@ -201,17 +201,13 @@ fn mmu_self_check() {
     uart::write_str("mmu self-check passed\n");
 }
 
-/// Exercise the syscall path via `SVC` from EL1: prove args-in/return-out and a
-/// side-effecting syscall, then let boot continue (which proves `ERET` resumed).
+/// Exercise the syscall path via `SVC` from EL1: prove args-in/return-out and
+/// that `ERET` resumed us. (Side-effecting I/O syscalls are gone — all action
+/// I/O flows through the jring, which `ring_self_check` covers.)
 fn syscall_self_check() {
     // SAFETY: issuing supervisor calls with the kernel's own syscall ABI.
     let sum = unsafe { syscall(syscall::SYS_ADD, 3, 4) };
     assert_eq!(sum, 7, "syscall add returned the wrong value");
-
-    let msg = "Hello from a syscall!";
-    // SAFETY: msg is a live UTF-8 string; SYS_PRINT reads (ptr, len).
-    unsafe { syscall(syscall::SYS_PRINT, msg.as_ptr() as u64, msg.len() as u64) };
-    uart::write_str("\n");
 
     uart::write_str("syscall self-check passed\n");
 }

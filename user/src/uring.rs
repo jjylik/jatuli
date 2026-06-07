@@ -1,0 +1,115 @@
+//! Userspace half of `jring` (a ~60-line liburing).
+//!
+//! The kernel maps one shared page holding a submission queue (we produce,
+//! kernel consumes) and a completion queue (kernel produces, we consume).
+//! [`sqe`] writes are plain memory stores; [`submit`] is the only syscall, and
+//! a parked `READ` completes later from the kernel's timer interrupt — the CQE
+//! appears in [`wait`]'s spin with no syscall at all.
+
+use core::arch::asm;
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
+const SYS_RING_SETUP: u64 = 5;
+const SYS_RING_ENTER: u64 = 6;
+
+pub const OP_NOP: u64 = 0;
+pub const OP_PRINT: u64 = 1;
+pub const OP_READ: u64 = 2;
+
+const ENTRIES: u32 = 16;
+const MASK: u32 = ENTRIES - 1;
+const SQ_TAIL: usize = 0x04;
+const CQ_HEAD: usize = 0x08;
+const CQ_TAIL: usize = 0x0c;
+const SQ_OFF: usize = 0x40;
+const CQ_OFF: usize = 0x280;
+
+/// Ring page VA, returned by `SYS_RING_SETUP`. (Lives in our .bss — which also
+/// gives the program a writable PT_LOAD segment, exercising the loader's
+/// per-segment permissions.)
+static RING_VA: AtomicUsize = AtomicUsize::new(0);
+
+/// Completions reaped while waiting for a different tag (tag 0 = empty slot;
+/// max in-flight is small — the shell never exceeds a banner batch).
+static STASH: [(AtomicU64, AtomicU64); 4] = [
+    (AtomicU64::new(0), AtomicU64::new(0)),
+    (AtomicU64::new(0), AtomicU64::new(0)),
+    (AtomicU64::new(0), AtomicU64::new(0)),
+    (AtomicU64::new(0), AtomicU64::new(0)),
+];
+
+fn ring() -> usize {
+    RING_VA.load(Ordering::Relaxed)
+}
+
+fn index(off: usize) -> &'static AtomicU32 {
+    // SAFETY: the four ring indices are aligned u32s in the mapped ring page.
+    unsafe { &*((ring() + off) as *const AtomicU32) }
+}
+
+/// Map the ring (idempotent) and remember where it lives. Call once at startup.
+pub fn setup() {
+    let va: u64;
+    // SAFETY: SYS_RING_SETUP takes no arguments and returns the ring page VA.
+    unsafe {
+        asm!("svc #0", in("x8") SYS_RING_SETUP, out("x0") va, in("x1") 0u64, options(nostack));
+    }
+    RING_VA.store(va as usize, Ordering::Relaxed);
+}
+
+/// Queue one submission: write the SQE, then publish it with a release store
+/// of the tail (the kernel acquires the tail before reading entries).
+pub fn sqe(op: u64, a0: u64, a1: u64, tag: u64) {
+    let tail = index(SQ_TAIL).load(Ordering::Relaxed); // we are the only producer
+    let p = (ring() + SQ_OFF + (tail & MASK) as usize * 32) as *mut u64;
+    // SAFETY: in-bounds SQE slot in the mapped ring page.
+    unsafe {
+        p.write_volatile(op);
+        p.add(1).write_volatile(a0);
+        p.add(2).write_volatile(a1);
+        p.add(3).write_volatile(tag);
+    }
+    index(SQ_TAIL).store(tail.wrapping_add(1), Ordering::Release);
+}
+
+/// Tell the kernel to process published submissions. One `svc` per batch.
+pub fn submit() {
+    // SAFETY: SYS_RING_ENTER reads only the (already published) ring.
+    unsafe {
+        asm!("svc #0", in("x8") SYS_RING_ENTER, in("x0") 0u64, in("x1") 0u64, options(nostack));
+    }
+}
+
+/// Spin until the completion tagged `tag` arrives; returns its result.
+/// Completions for other tags reaped along the way are stashed, not lost.
+pub fn wait(tag: u64) -> i64 {
+    // Did an earlier wait already reap it?
+    for (t, r) in STASH.iter() {
+        if tag != 0 && t.load(Ordering::Relaxed) == tag {
+            t.store(0, Ordering::Relaxed);
+            return r.load(Ordering::Relaxed) as i64;
+        }
+    }
+    loop {
+        let head = index(CQ_HEAD).load(Ordering::Relaxed); // we are the only consumer
+        let tail = index(CQ_TAIL).load(Ordering::Acquire);
+        if head == tail {
+            core::hint::spin_loop();
+            continue;
+        }
+        let p = (ring() + CQ_OFF + (head & MASK) as usize * 16) as *const u64;
+        // SAFETY: in-bounds CQE slot, published by the release store of cq_tail.
+        let (got, res) = unsafe { (p.read_volatile(), p.add(1).read_volatile() as i64) };
+        index(CQ_HEAD).store(head.wrapping_add(1), Ordering::Release);
+        if got == tag {
+            return res;
+        }
+        for (t, r) in STASH.iter() {
+            if t.load(Ordering::Relaxed) == 0 {
+                t.store(got, Ordering::Relaxed);
+                r.store(res as u64, Ordering::Relaxed);
+                break;
+            }
+        }
+    }
+}

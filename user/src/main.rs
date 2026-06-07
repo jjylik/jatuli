@@ -1,18 +1,37 @@
 #![no_std]
 #![no_main]
 
-use core::arch::asm;
+mod uring;
 
-// Syscall numbers — must match the kernel's `syscall.rs` ABI.
-const SYS_PRINT: u64 = 2;
+use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+// All "action" I/O flows through the jring (see uring.rs); the only plain
+// syscall left for us is exit, which by nature cannot complete via the ring.
 const SYS_EXIT: u64 = 3;
-const SYS_READ: u64 = 4;
 
 const MAX_LINE: usize = 128;
 
+/// Monotonic completion tag (0 is reserved for "empty stash slot").
+static NEXT_TAG: AtomicU64 = AtomicU64::new(1);
+
+fn tag() -> u64 {
+    NEXT_TAG.fetch_add(1, Ordering::Relaxed)
+}
+
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    print("jsh: type 'help'\n");
+    uring::setup();
+
+    // Banner as a batch: two ops published, ONE syscall, tag-matched reaping.
+    let banner = "jsh: type 'help'\n";
+    let (t1, t2) = (tag(), tag());
+    uring::sqe(uring::OP_NOP, 0, 0, t1);
+    uring::sqe(uring::OP_PRINT, banner.as_ptr() as u64, banner.len() as u64, t2);
+    uring::submit();
+    uring::wait(t1);
+    uring::wait(t2);
+
     let mut line = [0u8; MAX_LINE];
     loop {
         print("jsh> ");
@@ -26,9 +45,7 @@ pub extern "C" fn _start() -> ! {
 fn read_line(line: &mut [u8; MAX_LINE]) -> usize {
     let mut len = 0;
     loop {
-        let mut byte = 0u8;
-        // SAFETY: `byte` is a writable stack byte; SYS_READ blocks for >= 1.
-        unsafe { sys_read(&mut byte, 1) };
+        let byte = read_byte();
         match byte {
             b'\r' | b'\n' => {
                 print("\n");
@@ -52,6 +69,18 @@ fn read_line(line: &mut [u8; MAX_LINE]) -> usize {
     }
 }
 
+/// Fetch one byte via an async READ: submit, then spin on the completion
+/// queue. If no key is waiting, the kernel parks the op and the CQE is posted
+/// later from the timer interrupt — zero syscalls on the wakeup path.
+fn read_byte() -> u8 {
+    let mut byte = 0u8;
+    let t = tag();
+    uring::sqe(uring::OP_READ, &mut byte as *mut u8 as u64, 1, t);
+    uring::submit();
+    uring::wait(t);
+    byte
+}
+
 /// Run one entered line.
 fn dispatch(line: &[u8]) {
     match line {
@@ -73,39 +102,12 @@ fn print(s: &str) {
     print_bytes(s.as_bytes());
 }
 
+/// Print via the ring: one PRINT submission, one completion.
 fn print_bytes(bytes: &[u8]) {
-    // SAFETY: `bytes` is a live slice in our mapped memory; SYS_PRINT reads (ptr, len).
-    unsafe { sys_print(bytes.as_ptr(), bytes.len()) };
-}
-
-/// SYS_PRINT(ptr, len): ask the kernel to print a UTF-8 string.
-///
-/// # Safety
-/// `ptr`/`len` must describe a readable byte range in this program's memory.
-unsafe fn sys_print(ptr: *const u8, len: usize) {
-    asm!(
-        "svc #0",
-        in("x8") SYS_PRINT,
-        in("x0") ptr as u64,
-        in("x1") len as u64,
-        options(nostack),
-    );
-}
-
-/// SYS_READ(buf, len): block until console input; returns bytes read.
-///
-/// # Safety
-/// `buf` must point to `len` writable bytes in this program's memory.
-unsafe fn sys_read(buf: *mut u8, len: usize) -> usize {
-    let ret: u64;
-    asm!(
-        "svc #0",
-        in("x8") SYS_READ,
-        inout("x0") buf as u64 => ret,
-        in("x1") len as u64,
-        options(nostack),
-    );
-    ret as usize
+    let t = tag();
+    uring::sqe(uring::OP_PRINT, bytes.as_ptr() as u64, bytes.len() as u64, t);
+    uring::submit();
+    uring::wait(t);
 }
 
 /// SYS_EXIT(code): terminate the program; never returns.
