@@ -100,3 +100,22 @@ memory reclaimed while the kernel keeps running.
   - `user/user.ld` — EL0 VA layout with separate R-X / R-W segments.
 
 See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/` for plans.
+
+## TODO
+
+The process arc (toward ring-native `spawn`, no `fork`):
+
+- Move user VAs to their own L0 slot so kernel/process tables split on a clean boundary.
+- Per-process address spaces: a `Process` owning its page tables, TTBR0-switched on context switch.
+- Process table + per-process state (today's `LOADED`/`USER_FRAMES`/ring waiter are singletons).
+- Multiple embedded programs: a name→ELF table, initramfs-style.
+- `OP_SPAWN` ring op returning a process handle; `OP_WAIT` completing on child exit.
+- Decide I/O multiplexing for many processes: whose ring does SQPOLL drain, who gets keystrokes.
+
+Independent polish:
+
+- Tickless idle: program `CNTP_CVAL` one-shot for the next `wake_at` instead of ticking through idle.
+- Wake-time preemption: need-resched on IRQ return (single-core analog of the reschedule IPI).
+- Exception fixup tables so kernel-side `copy_to_user` faults recover instead of halting.
+- Reap exited tasks' kernel stacks (`spawn` currently leaks them).
+- ASIDs to avoid a full TLB flush on address-space switch.
