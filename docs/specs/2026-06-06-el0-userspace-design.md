@@ -1,4 +1,4 @@
-# jos — Phase 9: Minimal EL0 Userspace + Pointer Validation (Design)
+# jatuli — Phase 9: Minimal EL0 Userspace + Pointer Validation (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

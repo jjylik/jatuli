@@ -1,4 +1,4 @@
-# jos — Phase 13: Event-Driven READ Completion (PL011 RX Interrupt) (Design)
+# jatuli — Phase 13: Event-Driven READ Completion (PL011 RX Interrupt) (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design

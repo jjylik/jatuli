@@ -1,4 +1,4 @@
-# jos — Phase 5: Rebase the Heap onto Frames (Design)
+# jatuli — Phase 5: Rebase the Heap onto Frames (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

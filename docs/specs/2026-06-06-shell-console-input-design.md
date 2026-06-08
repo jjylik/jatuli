@@ -1,4 +1,4 @@
-# jos — Phase 11: Console Input + `jsh` Userspace Shell (Design)
+# jatuli — Phase 11: Console Input + `jsh` Userspace Shell (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

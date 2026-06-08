@@ -1,4 +1,4 @@
-# jos — Phase 7: Trap Frame + SVC Syscall Dispatch (Design)
+# jatuli — Phase 7: Trap Frame + SVC Syscall Dispatch (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

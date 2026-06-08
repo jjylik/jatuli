@@ -1,4 +1,4 @@
-//! The jos ABI (Application Binary Interface): the contract between kernel
+//! The jatuli ABI (Application Binary Interface): the contract between kernel
 //! and userspace, in one place.
 //!
 //! Everything both sides must agree on byte-for-byte lives here — syscall

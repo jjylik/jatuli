@@ -1,4 +1,4 @@
-# jos — Phase 2: Kernel Heap Allocator (Design)
+# jatuli — Phase 2: Kernel Heap Allocator (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

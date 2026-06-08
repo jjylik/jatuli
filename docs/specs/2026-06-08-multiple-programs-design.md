@@ -1,4 +1,4 @@
-# jos — Phase 21: Multiple Userspace Programs in One Package (Design)
+# jatuli — Phase 21: Multiple Userspace Programs in One Package (Design)
 
 **Date:** 2026-06-08
 **Status:** Implemented

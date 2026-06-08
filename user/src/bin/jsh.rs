@@ -1,4 +1,4 @@
-//! `jsh`: the jos shell. Prompt, line editing, and the `help`/`spam`/`crash`/
+//! `jsh`: the jatuli shell. Prompt, line editing, and the `help`/`spam`/`crash`/
 //! `exit` builtins. All I/O flows through the ring (see the `user` runtime lib).
 
 #![no_std]

@@ -1,10 +1,10 @@
 [package]
-name = "jos"
+name = "jatuli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "jos"
+name = "jatuli"
 path = "src/main.rs"
 
 [dependencies]

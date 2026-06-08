@@ -2,7 +2,7 @@
 set -euo pipefail
 
 cargo build -q
-KERNEL=target/aarch64-unknown-none/debug/jos
+KERNEL=target/aarch64-unknown-none/debug/jatuli
 
 # Boot the kernel with `$1` piped into the serial console; serial output lands
 # in the file named by `$2`.

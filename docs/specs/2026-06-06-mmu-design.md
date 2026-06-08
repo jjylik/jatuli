@@ -1,4 +1,4 @@
-# jos — Phase 4: Enable the MMU (Identity Map) (Design)
+# jatuli — Phase 4: Enable the MMU (Identity Map) (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

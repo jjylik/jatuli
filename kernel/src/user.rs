@@ -13,7 +13,7 @@ use crate::sched;
 /// Copy kernel bytes into process `pid`'s user memory, validating first. Returns
 /// false (and writes nothing) if the destination is not writable user memory.
 ///
-/// This is the single, named gate for kernel→user data movement — the jos analog
+/// This is the single, named gate for kernel→user data movement — the jatuli analog
 /// of Linux's `copy_to_user` (`access_ok` + the copy). The copy uses `STTRB`,
 /// AArch64's *unprivileged store*: executed at EL1 it performs the MMU permission
 /// check with EL0 rules, exactly as Linux's `__arch_copy_to_user` does. So even

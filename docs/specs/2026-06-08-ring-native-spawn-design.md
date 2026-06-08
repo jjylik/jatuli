@@ -1,4 +1,4 @@
-# jos — Phase 22: Ring-Native `OP_SPAWN` / `OP_WAIT` (Design)
+# jatuli — Phase 22: Ring-Native `OP_SPAWN` / `OP_WAIT` (Design)
 
 **Date:** 2026-06-08
 **Status:** Implemented
@@ -9,7 +9,7 @@ completes with the child's exit code. The kernel creates a *pristine* process fr
 scratch (fresh address space, loaded program, fresh stack); nothing is copied.
 
 This is the modern "create a pristine process, then run it" model rather than
-"copy the parent, then throw the copy away." jos has no `fork` to retire — spawn
+"copy the parent, then throw the copy away." jatuli has no `fork` to retire — spawn
 *is* the primitive.
 
 ## Builds on Phases 20–21
@@ -24,7 +24,7 @@ This is the modern "create a pristine process, then run it" model rather than
 ## Deliberately not done
 
 No `fork`, no `exec`/`execve`, no `posix_spawn`-style builder. `OP_SPAWN` takes a
-name and nothing else — no `argv`, `envp`, file-descriptor actions, or flags. jos
+name and nothing else — no `argv`, `envp`, file-descriptor actions, or flags. jatuli
 has no environment, no fd table, and no signals, so those Linux concepts have
 nothing to map to; if `argv` ever earns its place it will be added then. The SQE
 carries the parameters directly (no args struct).

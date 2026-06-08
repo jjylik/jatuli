@@ -1,4 +1,4 @@
-# jos — Phase 14: User Program as a Scheduler Task + Blocking Ring Waits (Design)
+# jatuli — Phase 14: User Program as a Scheduler Task + Blocking Ring Waits (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design

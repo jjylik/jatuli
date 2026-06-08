@@ -1,6 +1,6 @@
 //! Minimal ELF64 loader for the embedded EL0 userspace image.
 //!
-//! Supports exactly what jos needs: a little-endian AArch64 `ET_EXEC` image with
+//! Supports exactly what jatuli needs: a little-endian AArch64 `ET_EXEC` image with
 //! `PT_LOAD` segments at fixed virtual addresses. No relocations, no dynamic
 //! linking, no demand paging.
 

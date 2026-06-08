@@ -1,4 +1,4 @@
-# jos — Phase 20: Per-Process Address Spaces + Per-Process Rings (Design)
+# jatuli — Phase 20: Per-Process Address Spaces + Per-Process Rings (Design)
 
 **Date:** 2026-06-08
 **Status:** Implemented

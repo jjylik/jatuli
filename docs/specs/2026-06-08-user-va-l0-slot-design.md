@@ -1,4 +1,4 @@
-# jos — Phase 19: User VAs in Their Own L0 Slot (Design)
+# jatuli — Phase 19: User VAs in Their Own L0 Slot (Design)
 
 **Date:** 2026-06-08
 **Status:** Approved design

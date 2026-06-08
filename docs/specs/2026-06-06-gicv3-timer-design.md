@@ -1,4 +1,4 @@
-# jos — Phase 8: GICv3 + Generic Timer Interrupts (Design)
+# jatuli — Phase 8: GICv3 + Generic Timer Interrupts (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

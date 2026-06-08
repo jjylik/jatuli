@@ -1,4 +1,4 @@
-# jos — Phase 12: `jring`, an io_uring-lite (Design)
+# jatuli — Phase 12: `jring`, an io_uring-lite (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design
@@ -8,7 +8,7 @@ completion tags, and genuinely asynchronous completion — a parked `READ` is co
 from the timer interrupt while user code runs, with no syscall involved. `SYS_PRINT`
 and `SYS_READ` are deleted; all "action" I/O flows through the ring.
 
-Context: inspired by LWN's "moving beyond fork() + exec()" discussion. jos never had
+Context: inspired by LWN's "moving beyond fork() + exec()" discussion. jatuli never had
 fork, so the spawn-related ideas wait for per-process address spaces; this phase builds
 the io_uring mechanism itself, in its honest reduced form (see "What this is not").
 

@@ -73,7 +73,7 @@ extern "C" fn exception_dispatch(kind: u64, frame: *mut TrapFrame) {
                 // kind >= 8 means the SVC came from a lower EL (EL0 userspace).
                 EC_SVC => syscall::dispatch(frame, kind >= 8),
                 // Any other sync exception FROM EL0 is the program's bug, not
-                // ours: kill it (the jos SIGSEGV) and keep the kernel running.
+                // ours: kill it (the jatuli SIGSEGV) and keep the kernel running.
                 // Same-EL faults still halt — those are kernel bugs.
                 _ if kind >= 8 => kill_user(esr, frame),
                 _ => report_and_halt(kind, esr, frame),

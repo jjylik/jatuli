@@ -1,4 +1,4 @@
-# jos — Phase 6: Exception Vectors (Report-and-Halt) (Design)
+# jatuli — Phase 6: Exception Vectors (Report-and-Halt) (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

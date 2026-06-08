@@ -1,4 +1,4 @@
-# jos — Phase 1: Hello World Boot (Design)
+# jatuli — Phase 1: Hello World Boot (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design, pre-implementation
@@ -40,8 +40,8 @@ boot path is understood, not borrowed.
 ## File layout
 
 ```
-jos/
-├── Cargo.toml              # name=jos, panic="abort" (no unwinder)
+jatuli/
+├── Cargo.toml              # name=jatuli, panic="abort" (no unwinder)
 ├── .cargo/config.toml      # target, link-arg=-Tlinker.ld, qemu runner
 ├── linker.ld               # load 0x40080000, sections, _stack_top
 ├── src/
@@ -68,7 +68,7 @@ jos/
 cargo run
 # or explicitly:
 qemu-system-aarch64 -machine virt -cpu cortex-a72 -nographic \
-  -kernel target/aarch64-unknown-none/debug/jos
+  -kernel target/aarch64-unknown-none/debug/jatuli
 ```
 
 **Success = `Hello, World!` appears in the terminal, then QEMU sits idle (CPU parked).**

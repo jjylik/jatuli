@@ -1,4 +1,4 @@
-# jos — Phase 10: Separately-Compiled EL0 Userspace Crate + ELF Loader (Design)
+# jatuli — Phase 10: Separately-Compiled EL0 Userspace Crate + ELF Loader (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design
@@ -19,7 +19,7 @@ separate compilation unit the kernel only ever sees as a built ELF. The program 
 ## Repo layout — Cargo workspace
 
 ```
-jos/
+jatuli/
 ├── Cargo.toml          # [workspace], default-members = ["kernel"]
 ├── kernel/             # everything in src/ today moves here
 │   ├── Cargo.toml
@@ -150,7 +150,7 @@ program prints `Hello, world from EL0!` then calls `SYS_EXIT(0)`; the kernel pri
 | File | Change |
 |---|---|
 | `Cargo.toml` (root) | becomes `[workspace]`, `default-members = ["kernel"]`. |
-| `kernel/Cargo.toml` (new) | the package formerly at root (`name = "jos"`). |
+| `kernel/Cargo.toml` (new) | the package formerly at root (`name = "jatuli"`). |
 | `kernel/build.rs` (new) | build user crate (isolated target dir), emit `USER_ELF`, `-Tlinker.ld`. |
 | `kernel/linker.ld` | moved from root, unchanged. |
 | `kernel/src/*` | moved from `src/`. |

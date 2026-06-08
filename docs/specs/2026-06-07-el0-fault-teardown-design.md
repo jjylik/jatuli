@@ -1,10 +1,10 @@
-# jos — Phase 18: EL0 Fault Handling + Process Teardown (Design)
+# jatuli — Phase 18: EL0 Fault Handling + Process Teardown (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design
 **Goal:** A user-program bug stops being a kernel emergency. A fault at EL0 (data abort,
 instruction abort, anything that isn't an `SVC`) kills the user task with a diagnostic —
-the jos analog of SIGSEGV — and the kernel carries on. Exit and death both reclaim the
+the jatuli analog of SIGSEGV — and the kernel carries on. Exit and death both reclaim the
 program's memory: segments and stack are unmapped and their frames returned to the pool.
 Completes the *death* half of the process lifecycle before the multi-process arc.
 
@@ -33,7 +33,7 @@ poller) keep running; the machine survives. Same-EL faults (kernel bugs) still
 New mechanisms:
 
 - **`mmu::unmap_page(va)`**: walk to the L3 entry, clear it, `tlbi vaae1` + barriers
-  (the existing `map_page` sequence, pointed at invalidation). First unmapping in jos.
+  (the existing `map_page` sequence, pointed at invalidation). First unmapping in jatuli.
 - **Frame bookkeeping**: `elf::load` records every `(va, frame)` it maps into a
   caller-provided `Vec` (kernel has `alloc`); `enter_user` adds the stack frame and
   stores the list in kernel-side state (`USER_FRAMES`).

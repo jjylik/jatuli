@@ -1,4 +1,4 @@
-# jos — Knowledge Self-Check
+# jatuli — Knowledge Self-Check
 
 A quiz over what this kernel actually does. Each question ties an OS concept to a concrete
 detail in the code. Answer in your head (or out loud), then expand the answer to check.
@@ -780,12 +780,12 @@ would syscall and the poller would find an empty SQ (and never print its pickup 
 Clear-at-wake makes exactly one trap pay for the revival.
 </details>
 
-**18.4** Why is jos's SQPOLL "architectural demonstration, not a performance win", where
+**18.4** Why is jatuli's SQPOLL "architectural demonstration, not a performance win", where
 Linux's can be both?
 
 <details><summary>Answer</summary>
 Linux dedicates a **spare core** to the poller — submission becomes literally trap-free on
-the submitting core (cache coherency carries the store across). jos has one CPU: the poller
+the submitting core (cache coherency carries the store across). jatuli has one CPU: the poller
 time-shares with the producer, pickup latency is tick-bounded, and the poller's polling
 steals cycles from the task producing the work. The `NEED_WAKEUP` protocol is identical;
 only the economics differ.
@@ -813,7 +813,7 @@ Timing (devices deliver on their schedule; unconsumed bytes need a home or are l
 and lifetime (in a real multi-process OS the kernel can't write a user buffer at arbitrary
 interrupt time — wrong address space, possibly swapped out, possibly freed; interrupt
 context can't take page faults), and multiplexing/policy (line discipline, many consumers).
-jos's earlier direct-to-user-buffer IRQ write was sound only under toy conditions: single
+jatuli's earlier direct-to-user-buffer IRQ write was sound only under toy conditions: single
 address space, no swapping, a provably live spinning waiter.
 </details>
 

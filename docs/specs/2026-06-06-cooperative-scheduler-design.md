@@ -1,4 +1,4 @@
-# jos — Phase 10: Cooperative Kernel Scheduler (Design)
+# jatuli — Phase 10: Cooperative Kernel Scheduler (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

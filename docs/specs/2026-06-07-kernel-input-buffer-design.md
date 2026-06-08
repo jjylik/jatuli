@@ -1,4 +1,4 @@
-# jos — Phase 16: Kernel Input Buffer + `copy_to_user` (Design)
+# jatuli — Phase 16: Kernel Input Buffer + `copy_to_user` (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design

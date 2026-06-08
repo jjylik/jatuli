@@ -1,4 +1,4 @@
-# jos — Phase 11: Preemptive Scheduling + Sleep (Design)
+# jatuli — Phase 11: Preemptive Scheduling + Sleep (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design

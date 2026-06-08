@@ -1,4 +1,4 @@
-//! The jos userspace runtime ("libu"): the shared library every program in this
+//! The jatuli userspace runtime ("libu"): the shared library every program in this
 //! package links against.
 //!
 //! Holds the jring liburing (`uring`), the print/line helpers, the program-exit

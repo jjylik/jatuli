@@ -1,4 +1,4 @@
-# jos — Phase 15: SQPOLL (Kernel Submission Poller) (Design)
+# jatuli — Phase 15: SQPOLL (Kernel Submission Poller) (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design
@@ -17,7 +17,7 @@ prints with no syscall in the submission path.
 
 ## Honest single-core framing
 
-Linux SQPOLL assumes a spare core to dedicate; jos has one CPU, so the poller
+Linux SQPOLL assumes a spare core to dedicate; jatuli has one CPU, so the poller
 time-shares with the user task (poll → `yield_now` → user runs until the next tick).
 Pickup latency is therefore up to one 10 ms tick, and SQPOLL here is *architectural*
 demonstration, not a performance win. Also: jsh's normal submit-then-wait pattern

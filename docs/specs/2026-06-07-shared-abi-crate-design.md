@@ -1,4 +1,4 @@
-# jos — Phase 17: Shared ABI Crate + Typed Ring Page (Design)
+# jatuli — Phase 17: Shared ABI Crate + Typed Ring Page (Design)
 
 **Date:** 2026-06-07
 **Status:** Approved design

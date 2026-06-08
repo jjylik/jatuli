@@ -1,4 +1,4 @@
-# jos — Phase 3: Physical Frame Allocator (Design)
+# jatuli — Phase 3: Physical Frame Allocator (Design)
 
 **Date:** 2026-06-06
 **Status:** Approved design
