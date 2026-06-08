@@ -107,10 +107,11 @@ See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/`
 
 ## TODO
 
-The process arc (toward ring-native `spawn`, no `fork`):
-- `OP_SPAWN` ring op returning a process handle; `OP_WAIT` completing on child exit.
+The process arc — ring-native `spawn`/`wait` work (no `fork`, no `exec`); what's left:
+- Program arguments for `OP_SPAWN` (today it takes a name only).
 - Finish I/O multiplexing: foreground owns the keyboard today; decide fair
   keystroke routing and whose SQ the poller prioritizes.
+- Graceful spawn failure on frame exhaustion (kernel currently panics).
 
 Independent polish:
 

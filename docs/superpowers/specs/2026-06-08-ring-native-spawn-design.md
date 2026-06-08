@@ -1,7 +1,7 @@
 # jos — Phase 22: Ring-Native `OP_SPAWN` / `OP_WAIT` (Design)
 
 **Date:** 2026-06-08
-**Status:** Approved design
+**Status:** Implemented
 **Goal:** Let a running program start and reap a child program entirely over the
 ring — no `fork`, no `exec`, and (for spawn/wait) no syscall. A program submits an
 `OP_SPAWN` naming a program and gets back a handle; an `OP_WAIT` on that handle

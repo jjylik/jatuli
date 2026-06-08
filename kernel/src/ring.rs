@@ -13,7 +13,10 @@
 
 use core::sync::atomic::Ordering;
 
-use abi::{Cqe, RingPage, Sqe, NEED_WAKEUP, OP_NOP, OP_PRINT, OP_READ, RING_ENTRIES, RING_MASK, USER_RING_VA};
+use abi::{
+    Cqe, RingPage, Sqe, NEED_WAKEUP, OP_NOP, OP_PRINT, OP_READ, OP_SPAWN, OP_WAIT, RING_ENTRIES,
+    RING_MASK, USER_RING_VA,
+};
 
 use crate::frames::alloc_frame;
 use crate::mmu::{self, PAGE_USER_RW};
@@ -274,7 +277,73 @@ fn process_sqe(pid: usize, sqe: &Sqe) {
                 complete(ring_pa, user_data, ERR);
             }
         }
+        OP_SPAWN => spawn(pid, arg0, arg1, user_data),
+        OP_WAIT => wait(pid, arg0, user_data),
         _ => complete(ring_pa, user_data, ERR),
+    }
+}
+
+/// `OP_SPAWN`: create a fresh process running the named program and run it as a
+/// background task. The caller's address space is live (drain runs in its context
+/// or the poller activated it), so the name pointer resolves. Completes with the
+/// child's handle (pid), or [`ERR`] for a bad pointer or unknown program.
+fn spawn(pid: usize, name_ptr: usize, name_len: usize, user_data: u64) {
+    let ring_pa = process::ring_pa(pid);
+    if !process::is_user_range(pid, name_ptr, name_len, false) {
+        complete(ring_pa, user_data, ERR);
+        return;
+    }
+    // SAFETY: validated to lie in the caller's mapped, live user memory.
+    let bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, name_len) };
+    let name = core::str::from_utf8(bytes).ok();
+    let image = match name.and_then(crate::programs::get) {
+        Some(image) => image,
+        None => {
+            complete(ring_pa, user_data, ERR);
+            return;
+        }
+    };
+
+    let ttbr0 = mmu::new_address_space();
+    let child = process::create(image, ttbr0);
+    process::set_parent(child, pid);
+    debug_assert!(
+        mmu::translate(ttbr0, abi::USER_BASE) != mmu::translate(process::ttbr0(pid), abi::USER_BASE),
+        "spawned child shares the parent's frame at USER_BASE",
+    );
+    crate::kprintln!("[spawn] {} -> pid {}", name.unwrap_or("?"), child);
+    // Background task: the parent keeps the foreground.
+    sched::spawn_user(crate::user_task, 0, child, ttbr0);
+    complete(ring_pa, user_data, child as i64);
+}
+
+/// `OP_WAIT`: complete with a child's exit code. If the child already exited,
+/// complete now; otherwise park the wait — the child's exit fires it. Rejects a
+/// handle that is not one of the caller's children.
+fn wait(pid: usize, handle: usize, user_data: u64) {
+    let ring_pa = process::ring_pa(pid);
+    if handle >= process::count() || process::parent(handle) != Some(pid) {
+        complete(ring_pa, user_data, ERR);
+        return;
+    }
+    match process::exit_code(handle) {
+        Some(code) => complete(ring_pa, user_data, code),
+        None => process::register_wait(handle, user_data),
+    }
+}
+
+/// A process exited (or was killed) with `code`: record it and, if a parent is
+/// parked in `OP_WAIT`, post the completion to the parent's ring (reached by
+/// identity PA, so it works even though the parent is not current) and wake it.
+pub fn notify_exit(pid: usize, code: i64) {
+    if let Some((parent, tag)) = process::on_exit(pid, code) {
+        let parent_ring = process::ring_pa(parent);
+        if parent_ring != 0 {
+            complete(parent_ring, tag, code);
+        }
+        if let Some(waiter) = process::take_waiter(parent) {
+            sched::wake(waiter);
+        }
     }
 }
 

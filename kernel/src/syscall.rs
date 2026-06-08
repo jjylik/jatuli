@@ -22,11 +22,12 @@ pub fn dispatch(frame: &mut TrapFrame, _from_user: bool) {
         SYS_RING_SETUP => crate::ring::setup(),
         SYS_RING_ENTER => crate::ring::enter(frame.x[0]),
         SYS_EXIT => {
-            kprintln!("[user] exited with code {}", frame.x[0] as i64);
+            let code = frame.x[0] as i64;
+            kprintln!("[user] exited with code {}", code);
             // The process is done: reclaim its memory, retire its task, and
             // switch away for good. We never ERET back to EL0; the idle task
             // runs from here on.
-            crate::user::teardown();
+            crate::user::teardown(code);
             crate::sched::exit_current()
         }
         other => {

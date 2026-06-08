@@ -82,6 +82,46 @@ fn read_byte() -> u8 {
     byte
 }
 
+/// Spawn the program named `name` (ring-native `OP_SPAWN`). Returns the child's
+/// handle, or a negative error (unknown program / bad pointer).
+pub fn spawn(name: &str) -> i64 {
+    let t = tag();
+    uring::sqe(uring::OP_SPAWN, name.as_ptr() as u64, name.len() as u64, t);
+    uring::submit();
+    uring::wait(t)
+}
+
+/// Wait for child `handle` to exit (ring-native `OP_WAIT`); returns its exit code,
+/// or a negative error (not our child).
+pub fn wait_child(handle: i64) -> i64 {
+    let t = tag();
+    uring::sqe(uring::OP_WAIT, handle as u64, 0, t);
+    uring::submit();
+    uring::wait(t)
+}
+
+/// Print a signed integer in decimal via the ring.
+pub fn print_dec(n: i64) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    let negative = n < 0;
+    // Two's-complement magnitude: works for all i64, including i64::MIN.
+    let mut v = if negative { (!(n as u64)).wrapping_add(1) } else { n as u64 };
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    if negative {
+        i -= 1;
+        buf[i] = b'-';
+    }
+    print_bytes(&buf[i..]);
+}
+
 /// Terminate the program with `code` via `SYS_EXIT`; never returns. Always sound
 /// to call — the kernel never returns control to EL0 afterward.
 pub fn exit(code: i32) -> ! {

@@ -49,6 +49,14 @@ pub struct Process {
     pub ring_waiter: Option<usize>,
     /// Whether this process owns the keyboard (its parked reads receive input).
     pub foreground: bool,
+    /// The process that spawned this one (`None` for the initial process). Only
+    /// the parent may `OP_WAIT` on this process.
+    pub parent: Option<usize>,
+    /// Exit code, set at teardown; readable from the husk afterward (so a late
+    /// `OP_WAIT` still sees it).
+    pub exit_code: Option<i64>,
+    /// A parent's parked `OP_WAIT` completion tag, fired when this process exits.
+    pub exit_waiter: Option<u64>,
 }
 
 static PROCESSES: Locked<Vec<Process>> = Locked::new(Vec::new());
@@ -77,8 +85,42 @@ pub fn create(image: &[u8], ttbr0: u64) -> usize {
         pending: [None; MAX_PENDING],
         ring_waiter: None,
         foreground: false,
+        parent: None,
+        exit_code: None,
+        exit_waiter: None,
     });
     procs.len() - 1
+}
+
+/// Record that process `pid` was spawned by `parent`.
+pub fn set_parent(pid: usize, parent: usize) {
+    PROCESSES.lock()[pid].parent = Some(parent);
+}
+
+/// The process that spawned `pid`, if any.
+pub fn parent(pid: usize) -> Option<usize> {
+    PROCESSES.lock()[pid].parent
+}
+
+/// Process `pid`'s exit code, if it has exited.
+pub fn exit_code(pid: usize) -> Option<i64> {
+    PROCESSES.lock()[pid].exit_code
+}
+
+/// Park an `OP_WAIT` on process `pid`: remember the waiter's completion tag, to be
+/// fired when `pid` exits.
+pub fn register_wait(pid: usize, tag: u64) {
+    PROCESSES.lock()[pid].exit_waiter = Some(tag);
+}
+
+/// Record process `pid`'s exit `code` and take any parked waiter. Returns the
+/// `(parent_pid, tag)` to complete on the parent's ring, if a parent was waiting.
+pub fn on_exit(pid: usize, code: i64) -> Option<(usize, u64)> {
+    let mut procs = PROCESSES.lock();
+    procs[pid].exit_code = Some(code);
+    let tag = procs[pid].exit_waiter.take()?;
+    let parent = procs[pid].parent?;
+    Some((parent, tag))
 }
 
 /// Number of processes in the table (never shrinks; teardown leaves a husk).

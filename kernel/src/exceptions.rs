@@ -97,7 +97,7 @@ fn kill_user(esr: u64, frame: &TrapFrame) -> ! {
         frame.elr,
         far
     );
-    crate::user::teardown();
+    crate::user::teardown(-1); // killed: report an abnormal exit code to any waiter
     crate::sched::exit_current()
 }
 

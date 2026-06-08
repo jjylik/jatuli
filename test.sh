@@ -32,8 +32,8 @@ reject() { # reject <file> <needle>
 # Run 1 — a normal session: a typo, help, the SQPOLL demo, clean exit.
 # (\r is what a real terminal sends for Enter.)
 OUT="$(mktemp)"
-boot 'hellp\rhelp\rspam\rexit\r' "$OUT"
-for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "syscall self-check passed" "irq self-check passed" "elf self-check passed" "process isolation self-check passed" "echo: hello from a second program" "entering user mode (EL0)" "jsh: type 'help'" "unknown command: hellp" "commands: help spam crash exit" "spam 3" "[sqpoll] picked up work" "[user] exited with code 0" "[user] freed" "[sleeper] woke 3" "busy thread done" "preempt+sleep self-check passed"; do
+boot 'hellp\rhelp\rspam\rspawn\rexit\r' "$OUT"
+for needle in "Hello, World!" "Hello from the heap!" "heap self-check passed" "frame self-check passed" "mmu enabled" "mmu self-check passed" "syscall self-check passed" "irq self-check passed" "elf self-check passed" "entering user mode (EL0)" "jsh: type 'help'" "unknown command: hellp" "commands: help spam spawn crash exit" "spam 3" "[sqpoll] picked up work" "[spawn] echo -> pid" "echo: hello from a second program" "echo exited: 0" "[user] exited with code 0" "[user] freed" "[sleeper] woke 3" "busy thread done" "preempt+sleep self-check passed"; do
     expect "$OUT" "$needle"
 done
 

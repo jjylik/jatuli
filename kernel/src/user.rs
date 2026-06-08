@@ -74,9 +74,15 @@ pub fn enter_user() -> ! {
 /// Reclaim the current process's memory: unmap every page it owned (segments +
 /// stack + ring) and return the frames to the pool. Parked ring reads are
 /// dropped — their buffers no longer exist. Shared with exit and fault-kill.
-pub fn teardown() {
+pub fn teardown(code: i64) {
     let pid = sched::current_process().expect("teardown without a process");
     crate::ring::abort_user(pid);
+
+    // Record our exit and wake any parent parked in OP_WAIT on us (the completion
+    // posts to the parent's ring via its identity PA, so it works even though the
+    // parent is not the current process).
+    crate::ring::notify_exit(pid, code);
+
     let dead_ttbr0 = process::ttbr0(pid);
 
     // Unmap and free the program's frames from its own (currently live) space.

@@ -70,6 +70,15 @@ pub const OP_PRINT: u64 = 1;
 /// Opcode: read console input (`arg0` = buffer, `arg1` = length); completes
 /// with the number of bytes read once input is available.
 pub const OP_READ: u64 = 2;
+/// Opcode: spawn a program by name (`arg0` = name pointer, `arg1` = name length).
+/// Completes with the child's handle (its pid) in `result`, or negative on error
+/// (unknown program, or a bad/invalid name pointer). Ring-native — no `fork`/`exec`
+/// and no syscall: a fresh process is created from scratch and run.
+pub const OP_SPAWN: u64 = 3;
+/// Opcode: wait for a child to exit (`arg0` = a handle from `OP_SPAWN`). Completes
+/// with the child's exit code in `result`, or negative if the handle is not a
+/// child of the caller. Completes immediately if the child already exited.
+pub const OP_WAIT: u64 = 4;
 
 /// SQE — **Submission Queue Entry**: one I/O request, written by userspace
 /// into the SQ (submission queue) and consumed by the kernel.
@@ -79,7 +88,7 @@ pub const OP_READ: u64 = 2;
 /// out of order) are matched to requests.
 #[repr(C)]
 pub struct Sqe {
-    /// Operation code (`OP_NOP` / `OP_PRINT` / `OP_READ`).
+    /// Operation code (`OP_NOP` / `OP_PRINT` / `OP_READ` / `OP_SPAWN` / `OP_WAIT`).
     pub opcode: AtomicU64,
     /// First argument (typically a pointer, as a virtual address).
     pub arg0: AtomicU64,

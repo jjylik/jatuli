@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use abi::{RingPage, NEED_WAKEUP, RING_MASK, SYS_RING_ENTER, SYS_RING_SETUP};
 
-pub use abi::{OP_NOP, OP_PRINT, OP_READ};
+pub use abi::{OP_NOP, OP_PRINT, OP_READ, OP_SPAWN, OP_WAIT};
 
 /// Ring page VA, returned by `SYS_RING_SETUP`. (Lives in our .bss — which also
 /// gives the program a writable PT_LOAD segment, exercising the loader's

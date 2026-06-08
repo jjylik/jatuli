@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use user::{exit, print, print_bytes, read_line, tag, uring, MAX_LINE};
+use user::{exit, print, print_bytes, print_dec, read_line, spawn, tag, uring, wait_child, MAX_LINE};
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -32,8 +32,20 @@ fn dispatch(line: &[u8]) {
     match line {
         b"" => {}
         b"exit" => exit(0),
-        b"help" => print("commands: help spam crash exit\n"),
+        b"help" => print("commands: help spam spawn crash exit\n"),
         b"spam" => spam(),
+        b"spawn" => {
+            // Ring-native child process: spawn echo, wait for it, report its code.
+            let handle = spawn("echo");
+            if handle < 0 {
+                print("spawn failed\n");
+            } else {
+                let code = wait_child(handle);
+                print("echo exited: ");
+                print_dec(code);
+                print("\n");
+            }
+        }
         b"crash" => {
             // Write to our own R-X code segment: the MMU's W^X enforcement turns
             // this into a data abort, and the kernel kills us.

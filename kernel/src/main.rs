@@ -60,20 +60,14 @@ pub extern "C" fn kmain() -> ! {
     // SQEs are consumed without any syscall (it sleeps via NEED_WAKEUP when idle).
     sched::spawn(ring::sqpoll_main, 0);
 
-    // Two *distinct* programs, each in its own address space: identical user VAs
-    // (USER_BASE) backed by different frames and different TTBR0 — isolation by
-    // construction. Process 0 (jsh) owns the keyboard (foreground); process 1
-    // (echo) runs in the background, prints, and exits. Each runs as a schedulable
-    // task: the ERET to EL0 is on its own kernel stack, so its traps land there.
-    // kmain stays behind as the idle task.
+    // Boot a single foreground shell. Further programs are created on demand by
+    // jsh via the OP_SPAWN ring op — no kernel-hardcoded second process. jsh runs
+    // as a schedulable task: the ERET to EL0 is on its own kernel stack, so its
+    // traps land there. kmain stays behind as the idle task.
     let jsh = programs::get("jsh").expect("jsh program not embedded");
-    let echo = programs::get("echo").expect("echo program not embedded");
     let p0 = process::create(jsh, mmu::new_address_space());
     process::set_foreground(p0, true);
-    let p1 = process::create(echo, mmu::new_address_space());
-    process_isolation_self_check(p0, p1);
     sched::spawn_user(user_task, 0, p0, process::ttbr0(p0));
-    sched::spawn_user(user_task, 0, p1, process::ttbr0(p1));
     loop {
         // SAFETY: wait for an interrupt; any IRQ (timer, UART) wakes us.
         unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
@@ -86,19 +80,6 @@ pub extern "C" fn kmain() -> ! {
 extern "C" fn user_task(_arg: usize) {
     uart::write_str("entering user mode (EL0)...\n");
     user::enter_user();
-}
-
-/// Prove the two processes are isolated: distinct address-space roots, and the
-/// same user VA (`USER_BASE`, each program's text base) backed by *different*
-/// physical frames. Only separate page tables can do that.
-fn process_isolation_self_check(p0: usize, p1: usize) {
-    let (t0, t1) = (process::ttbr0(p0), process::ttbr0(p1));
-    assert_ne!(t0, t1, "processes share an address-space root");
-    let pa0 = mmu::translate(t0, abi::USER_BASE).expect("p0 USER_BASE unmapped");
-    let pa1 = mmu::translate(t1, abi::USER_BASE).expect("p1 USER_BASE unmapped");
-    assert_ne!(pa0, pa1, "processes share a frame at USER_BASE");
-    kprintln!("process isolation: USER_BASE -> {:#x} (p0) vs {:#x} (p1)", pa0, pa1);
-    uart::write_str("process isolation self-check passed\n");
 }
 
 /// Validate every embedded program's ELF header before we try to run any.
