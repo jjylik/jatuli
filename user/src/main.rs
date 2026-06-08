@@ -95,7 +95,7 @@ fn dispatch(line: &[u8]) {
             // Write to our own R-X code segment: the MMU's W^X enforcement
             // turns this into a data abort, and the kernel kills us.
             // SAFETY: deliberately not safe — that's the demo.
-            unsafe { (0x2_0000_0000 as *mut u8).write_volatile(0) }
+            unsafe { (abi::USER_BASE as *mut u8).write_volatile(0) }
         }
         other => {
             print("unknown command: ");

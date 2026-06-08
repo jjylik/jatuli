@@ -8,8 +8,10 @@ PHDRS
 
 SECTIONS
 {
-    /* User VA region, matching the kernel's user window (Phase 9). */
-    . = 0x200000000;
+    /* User VA region: L0 slot 1, must equal abi::USER_BASE (0x80_0000_0000).
+       Linker scripts can't read Rust, so this literal is the one duplicate of
+       that constant; the kernel asserts loaded segments land in this L0 slot. */
+    . = 0x8000000000;
 
     .text   : { *(.text .text.*) }              :text
     .rodata : { *(.rodata .rodata.*) }           :text

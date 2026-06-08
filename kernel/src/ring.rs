@@ -62,6 +62,14 @@ static RING: Locked<RingState> = Locked::new(RingState {
 /// The shared ring page, typed. The ONE place in the kernel where the ring's
 /// raw address becomes a reference; sound only after [`setup`] mapped it —
 /// every public entry point is gated on `RingState::mapped`.
+///
+/// HAZARD (per-process address spaces): the kernel dereferences the ring at a
+/// *user* VA (`USER_RING_VA`, in the user L0 slot). This is sound only while a
+/// single global TTBR0 maps that VA for both EL1 and EL0. Once TTBR0 is switched
+/// per process, this breaks: when process B is current, an IRQ completing process
+/// A's parked `READ` cannot reach A's ring through A's user VA. The fix — a
+/// kernel-side alias of the ring in the kernel's L0 slot, plus deciding how
+/// per-process rings are created and mapped — belongs to the per-process step.
 fn page() -> &'static RingPage {
     // SAFETY: the page is mapped (callers check `mapped`), 4 KiB, and lives
     // for the rest of the kernel's life; all fields are atomics, so shared

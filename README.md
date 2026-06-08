@@ -104,13 +104,11 @@ See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/`
 ## TODO
 
 The process arc (toward ring-native `spawn`, no `fork`):
-
-- Move user VAs to their own L0 slot so kernel/process tables split on a clean boundary.
 - Per-process address spaces: a `Process` owning its page tables, TTBR0-switched on context switch.
 - Process table + per-process state (today's `LOADED`/`USER_FRAMES`/ring waiter are singletons).
-- Multiple embedded programs: a name→ELF table, initramfs-style.
+- Multiple userspace programs.
 - `OP_SPAWN` ring op returning a process handle; `OP_WAIT` completing on child exit.
-- Decide I/O multiplexing for many processes: whose ring does SQPOLL drain, who gets keystrokes.
+- Decide I/O multiplexing
 
 Independent polish:
 

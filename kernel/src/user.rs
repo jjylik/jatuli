@@ -14,8 +14,9 @@ use crate::frames::{alloc_frame, free_frame, Frame, FRAME_SIZE};
 use crate::mmu::{self, PAGE_USER_RW};
 use crate::sync::Locked;
 
-/// Virtual base of the user stack (above the program's segments at 0x2_0000_0000).
-pub const USER_STACK_VA: usize = 0x2_0010_0000;
+/// Virtual base of the user stack: 1 MiB into the user window, above the
+/// program's segments (which start at `abi::USER_BASE`).
+pub const USER_STACK_VA: usize = abi::USER_BASE + 0x10_0000;
 /// User stack size (one page).
 const USER_STACK_SIZE: usize = FRAME_SIZE;
 

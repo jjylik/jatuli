@@ -11,7 +11,7 @@ USER_ELF=target/aarch64-unknown-none/debug/user
 
 RAM_BASE=0x40000000
 RAM_SIZE=$((128 * 1024 * 1024))
-USER_STACK_VA=0x200100000
+USER_STACK_VA=0x800100000
 PAGE=4096
 
 DUMPS=dumps
@@ -116,7 +116,7 @@ cp "$SERIAL" "$DUMPS/serial.txt"
     echo "key addresses:"
     echo "  0x40080000   kernel image base (linker.ld)"
     echo "  0x100000000  kernel heap virtual window (allocator.rs)"
-    echo "  0x200000000  user program link base (user/user.ld)"
+    echo "  0x8000000000 user program link base (user/user.ld, abi::USER_BASE)"
     echo "  $USER_STACK_VA  user stack (kernel/src/user.rs)"
     echo
     echo "symbol addresses: nm $KERNEL | sort   (or nm $USER_ELF)"

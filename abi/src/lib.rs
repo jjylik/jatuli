@@ -40,9 +40,19 @@ pub const SYS_RING_ENTER: u64 = 6;
 // jring: shared submission/completion rings
 // ---------------------------------------------------------------------------
 
-/// Virtual address where the kernel maps the shared ring page (above the user
-/// stack). Fixed by convention; `SYS_RING_SETUP` also returns it.
-pub const USER_RING_VA: usize = 0x2_0030_0000;
+/// Base of the EL0 virtual-address window. This is L0 slot 1 (512 GiB),
+/// deliberately separate from the kernel's L0 slot 0, so that per-process page
+/// tables can split kernel and user mappings on a clean top-level boundary.
+/// The `user.ld` linker script hardcodes this same value (it cannot read Rust);
+/// the kernel asserts loaded segments land in this slot, catching any drift.
+pub const USER_BASE: usize = 0x80_0000_0000;
+/// L0 index of the user window (= 1). The kernel checks loaded user VAs against it.
+pub const USER_L0_IDX: usize = USER_BASE >> 39;
+
+/// Virtual address where the kernel maps the shared ring page (3 MiB into the
+/// user window, above the user stack). Fixed by convention; `SYS_RING_SETUP`
+/// also returns it.
+pub const USER_RING_VA: usize = USER_BASE + 0x30_0000;
 
 /// Entries in each ring (power of two, so indices wrap with [`RING_MASK`]).
 pub const RING_ENTRIES: u32 = 16;

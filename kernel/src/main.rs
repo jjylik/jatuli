@@ -126,7 +126,7 @@ fn push_sqe(sqe: &abi::Sqe, op: u64, a0: u64, a1: u64, tag: u64) {
 /// Validate the embedded userspace ELF header before we try to run it.
 fn elf_self_check() {
     let entry = elf::validate(elf::USER_ELF);
-    assert!(entry >= 0x2_0000_0000, "user entry VA not in the user window");
+    assert!((entry >> 39) == abi::USER_L0_IDX, "user entry VA not in the user L0 slot");
     kprintln!("user elf: {} bytes, entry {:#x}", elf::USER_ELF.len(), entry);
     uart::write_str("elf self-check passed\n");
 }
