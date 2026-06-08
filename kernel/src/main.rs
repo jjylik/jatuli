@@ -16,6 +16,7 @@ mod irq;
 mod mem;
 mod mmu;
 mod process;
+mod programs;
 mod ring;
 mod sched;
 mod syscall;
@@ -59,15 +60,17 @@ pub extern "C" fn kmain() -> ! {
     // SQEs are consumed without any syscall (it sleeps via NEED_WAKEUP when idle).
     sched::spawn(ring::sqpoll_main, 0);
 
-    // Two processes from the same image, each in its own address space: identical
-    // user VAs backed by different frames and different TTBR0 — isolation by
-    // construction. Process 0 owns the keyboard (foreground); process 1 runs in
-    // the background (its reads park). Each runs as a schedulable task: the ERET
-    // to EL0 is on its own kernel stack, so its traps land there. kmain stays
-    // behind as the idle task.
-    let p0 = process::create(elf::USER_ELF, mmu::new_address_space());
+    // Two *distinct* programs, each in its own address space: identical user VAs
+    // (USER_BASE) backed by different frames and different TTBR0 — isolation by
+    // construction. Process 0 (jsh) owns the keyboard (foreground); process 1
+    // (echo) runs in the background, prints, and exits. Each runs as a schedulable
+    // task: the ERET to EL0 is on its own kernel stack, so its traps land there.
+    // kmain stays behind as the idle task.
+    let jsh = programs::get("jsh").expect("jsh program not embedded");
+    let echo = programs::get("echo").expect("echo program not embedded");
+    let p0 = process::create(jsh, mmu::new_address_space());
     process::set_foreground(p0, true);
-    let p1 = process::create(elf::USER_ELF, mmu::new_address_space());
+    let p1 = process::create(echo, mmu::new_address_space());
     process_isolation_self_check(p0, p1);
     sched::spawn_user(user_task, 0, p0, process::ttbr0(p0));
     sched::spawn_user(user_task, 0, p1, process::ttbr0(p1));
@@ -98,11 +101,13 @@ fn process_isolation_self_check(p0: usize, p1: usize) {
     uart::write_str("process isolation self-check passed\n");
 }
 
-/// Validate the embedded userspace ELF header before we try to run it.
+/// Validate every embedded program's ELF header before we try to run any.
 fn elf_self_check() {
-    let entry = elf::validate(elf::USER_ELF);
-    assert!((entry >> 39) == abi::USER_L0_IDX, "user entry VA not in the user L0 slot");
-    kprintln!("user elf: {} bytes, entry {:#x}", elf::USER_ELF.len(), entry);
+    for (name, image) in programs::PROGRAMS {
+        let entry = elf::validate(image);
+        assert!((entry >> 39) == abi::USER_L0_IDX, "user entry VA not in the user L0 slot");
+        kprintln!("program {}: {} bytes, entry {:#x}", name, image.len(), entry);
+    }
     uart::write_str("elf self-check passed\n");
 }
 

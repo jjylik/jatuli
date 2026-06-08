@@ -1,7 +1,7 @@
 # jos — Phase 21: Multiple Userspace Programs in One Package (Design)
 
 **Date:** 2026-06-08
-**Status:** Approved design
+**Status:** Implemented
 **Goal:** Run *distinct* user programs, not two instances of one image. Keep a
 single `user` Cargo package, but hold several programs inside it as separate
 binaries (`jsh`, `echo`), each its own ELF, sharing a runtime library. The kernel

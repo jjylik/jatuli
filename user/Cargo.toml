@@ -3,9 +3,12 @@ name = "user"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
+# The shared userspace runtime ("libu"): the jring liburing, print/line helpers,
+# program exit, and the panic handler. Each program is a binary under src/bin/
+# (auto-discovered by Cargo) that links this lib and provides its own `_start`.
+[lib]
 name = "user"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [dependencies]
 abi = { path = "../abi" }

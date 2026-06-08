@@ -9,9 +9,6 @@ use alloc::vec::Vec;
 use crate::frames::{alloc_frame, Frame, FRAME_SIZE};
 use crate::mmu::{self, PAGE_USER_RW, PAGE_USER_RX};
 
-/// The userspace program's ELF image, built by `build.rs` and embedded here.
-pub static USER_ELF: &[u8] = include_bytes!(env!("USER_ELF"));
-
 // ELF64 header field offsets (little-endian).
 const E_TYPE: usize = 16; // u16; 2 = ET_EXEC
 const E_MACHINE: usize = 18; // u16; 0xB7 = EM_AARCH64

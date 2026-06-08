@@ -6,8 +6,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 cargo build -q
+# Build the user programs to a known path too (the kernel embeds copies from an
+# isolated build dir); we parse jsh's PT_LOAD segments to know what to dump.
+cargo build -q -p user --target aarch64-unknown-none
 KERNEL=target/aarch64-unknown-none/debug/jos
-USER_ELF=target/aarch64-unknown-none/debug/user
+USER_ELF=target/aarch64-unknown-none/debug/jsh
 
 RAM_BASE=0x40000000
 RAM_SIZE=$((128 * 1024 * 1024))
