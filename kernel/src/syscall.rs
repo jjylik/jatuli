@@ -14,12 +14,13 @@ use crate::kprintln;
 pub use abi::{SYS_ADD, SYS_EXIT, SYS_RING_ENTER, SYS_RING_SETUP};
 
 /// Dispatch the syscall described by `frame` (number in `x8`, args in `x0..`).
-/// `from_user` is true when the `SVC` came from EL0, which gates pointer validation.
-pub fn dispatch(frame: &mut TrapFrame, from_user: bool) {
+/// `_from_user` (true when the `SVC` came from EL0) is no longer needed here —
+/// pointer validation is now per-process inside the ring layer.
+pub fn dispatch(frame: &mut TrapFrame, _from_user: bool) {
     let ret = match frame.x[8] {
         SYS_ADD => frame.x[0].wrapping_add(frame.x[1]),
         SYS_RING_SETUP => crate::ring::setup(),
-        SYS_RING_ENTER => crate::ring::enter(from_user, frame.x[0]),
+        SYS_RING_ENTER => crate::ring::enter(frame.x[0]),
         SYS_EXIT => {
             kprintln!("[user] exited with code {}", frame.x[0] as i64);
             // The process is done: reclaim its memory, retire its task, and

@@ -43,6 +43,13 @@ struct Task {
     state: State,
     /// Tick at which a `Blocked` task should be woken.
     wake_at: u64,
+    /// The process this task belongs to (index into the process table), or
+    /// `None` for a kernel-only task (idle, sqpoll).
+    process: Option<usize>,
+    /// Cached address-space root to install when this task runs. `None` leaves
+    /// the live `TTBR0` in place — safe because every space shares the kernel
+    /// L0[0]. A copy of the process's `ttbr0`, immutable for the task's life.
+    ttbr0: Option<u64>,
 }
 
 struct Scheduler {
@@ -62,12 +69,29 @@ pub fn init() {
         sp: 0,
         state: State::Runnable,
         wake_at: 0,
+        process: None,
+        ttbr0: None,
     });
     irq::restore(d);
 }
 
 /// Spawn a new kernel thread that runs `entry(arg)`.
 pub fn spawn(entry: extern "C" fn(usize), arg: usize) {
+    spawn_inner(entry, arg, None, None);
+}
+
+/// Spawn a thread bound to a user process: it runs under the process's address
+/// space (`ttbr0`), installed by the scheduler whenever the task is scheduled.
+pub fn spawn_user(entry: extern "C" fn(usize), arg: usize, process: usize, ttbr0: u64) {
+    spawn_inner(entry, arg, Some(process), Some(ttbr0));
+}
+
+fn spawn_inner(
+    entry: extern "C" fn(usize),
+    arg: usize,
+    process: Option<usize>,
+    ttbr0: Option<u64>,
+) {
     // Leaked: this phase never reaps tasks, so the stack lives forever.
     let stack: &'static mut [u8] = Box::leak(vec![0u8; STACK_SIZE].into_boxed_slice());
     let top = (stack.as_mut_ptr() as usize + STACK_SIZE) & !0xF;
@@ -90,6 +114,8 @@ pub fn spawn(entry: extern "C" fn(usize), arg: usize) {
         sp: ctx,
         state: State::Runnable,
         wake_at: 0,
+        process,
+        ttbr0,
     });
     irq::restore(d);
 }
@@ -105,7 +131,7 @@ pub fn any_worker_alive() -> bool {
 /// Pick the next runnable thread and switch to it. The caller MUST hold IRQs
 /// disabled. Returns (in the calling thread) once it is scheduled again.
 fn schedule() {
-    let (prev_sp, next_sp) = {
+    let (prev_sp, next_sp, next_ttbr0) = {
         let mut s = SCHEDULER.lock();
         let cur = s.current;
         let n = s.tasks.len();
@@ -123,8 +149,13 @@ fn schedule() {
         s.current = next;
         let prev_sp = core::ptr::addr_of_mut!(s.tasks[cur].sp);
         let next_sp = s.tasks[next].sp;
-        (prev_sp, next_sp)
+        (prev_sp, next_sp, s.tasks[next].ttbr0)
     };
+    // Install the next task's address space (idempotent in `activate`; kernel
+    // tasks pass `None` and keep the live space — kernel mappings are in L0[0]).
+    if let Some(ttbr0) = next_ttbr0 {
+        crate::mmu::activate(ttbr0);
+    }
     // SAFETY: IRQs are disabled; prev_sp/next_sp are valid task contexts and the
     // scheduler Vec does not move while we hold these raw pointers.
     unsafe { context_switch(prev_sp, next_sp) };
@@ -143,6 +174,18 @@ pub fn current() -> usize {
     let cur = SCHEDULER.lock().current;
     irq::restore(d);
     cur
+}
+
+/// The process the currently running task belongs to, or `None` for a
+/// kernel-only task.
+pub fn current_process() -> Option<usize> {
+    let d = irq::disable();
+    let p = {
+        let s = SCHEDULER.lock();
+        s.tasks[s.current].process
+    };
+    irq::restore(d);
+    p
 }
 
 /// Block the current task until an explicit [`wake`]. (`wake_at = u64::MAX`

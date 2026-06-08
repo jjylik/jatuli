@@ -123,6 +123,16 @@ pub fn free_frame(frame: Frame) {
     }
 }
 
+/// Return a frame to the pool by its physical address. For callers that hold a
+/// raw frame PA rather than a [`Frame`] — notably the MMU freeing page-table
+/// frames, which it allocates as raw pointers.
+///
+/// # Safety
+/// `pa` must be a 4 KiB-aligned frame from [`alloc_frame`] that is no longer in use.
+pub unsafe fn free_frame_at(pa: usize) {
+    FRAME_ALLOCATOR.lock().push(pa);
+}
+
 /// Number of frames currently free.
 pub fn free_frame_count() -> usize {
     FRAME_ALLOCATOR.lock().free_count

@@ -90,8 +90,9 @@ fn align_up(x: usize) -> usize {
 /// point and the mapped ranges; every `(va, frame)` pair mapped is recorded in
 /// `owned` so teardown can unmap and free the program's memory. Panics on
 /// anything malformed or unsupported.
-pub fn load(image: &[u8], owned: &mut Vec<(usize, Frame)>) -> Loaded {
+pub fn load(image: &[u8], ttbr0: u64, owned: &mut Vec<(usize, Frame)>) -> Loaded {
     let entry = validate(image);
+    let l0 = mmu::l0_ptr(ttbr0);
     let phoff = read_u64(image, E_PHOFF) as usize;
     let phentsize = read_u16(image, E_PHENTSIZE) as usize;
     let phnum = read_u16(image, E_PHNUM) as usize;
@@ -150,7 +151,9 @@ pub fn load(image: &[u8], owned: &mut Vec<(usize, Frame)>) -> Loaded {
                 mmu::sync_instruction_cache(frame.addr(), FRAME_SIZE);
             }
 
-            mmu::map_page(vaddr + page, frame.addr(), perms);
+            // SAFETY: `l0` is the target process's address-space root, being
+            // populated before it runs; this VA in the user window is unmapped.
+            unsafe { mmu::map_page_in(l0, vaddr + page, frame.addr(), perms) };
             owned.push((vaddr + page, frame));
             page += FRAME_SIZE;
         }

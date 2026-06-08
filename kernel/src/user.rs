@@ -1,63 +1,33 @@
-//! Drop to EL0 by loading the embedded userspace ELF.
+//! Drop to EL0 and run a loaded user process.
 //!
-//! Loads every `PT_LOAD` segment (see `elf.rs`), maps a user stack, and `ERET`s
-//! to the program's entry point. After that the kernel is re-entered only via
-//! syscalls or interrupts. User-supplied syscall pointers are validated against
-//! the loaded segment ranges plus the stack.
+//! Process creation (building the address space, loading the ELF, mapping a
+//! stack) lives in `process.rs`; this module ERETs into the *current* process
+//! and houses the kernel↔user data gate (`copy_to_user`) and syscall-pointer
+//! validation, both of which resolve against the current process.
 
 use core::arch::asm;
 
-use alloc::vec::Vec;
+use crate::process;
+use crate::sched;
 
-use crate::elf;
-use crate::frames::{alloc_frame, free_frame, Frame, FRAME_SIZE};
-use crate::mmu::{self, PAGE_USER_RW};
-use crate::sync::Locked;
-
-/// Virtual base of the user stack: 1 MiB into the user window, above the
-/// program's segments (which start at `abi::USER_BASE`).
-pub const USER_STACK_VA: usize = abi::USER_BASE + 0x10_0000;
-/// User stack size (one page).
-const USER_STACK_SIZE: usize = FRAME_SIZE;
-
-/// The loaded image's mapped ranges, recorded for pointer validation.
-static LOADED: Locked<Option<elf::Loaded>> = Locked::new(None);
-
-/// Every `(va, frame)` the program owns (segments + stack), recorded at load
-/// time so [`teardown`] can unmap and free them.
-static USER_FRAMES: Locked<Vec<(usize, Frame)>> = Locked::new(Vec::new());
-
-/// Whether `[ptr, ptr + len)` lies entirely within a mapped user segment or the
-/// user stack. Used to validate syscall pointers from EL0.
-pub fn is_user_range(ptr: usize, len: usize) -> bool {
-    check_user_range(ptr, len, false)
-}
-
-/// Like [`is_user_range`], but additionally requires the range to be writable:
-/// the stack, or a segment the loader mapped `PAGE_USER_RW`. The kernel must
-/// check this before storing into user memory (e.g. `SYS_READ`) — a store into
-/// the R-X code segment would permission-fault the kernel itself.
-pub fn is_user_range_writable(ptr: usize, len: usize) -> bool {
-    check_user_range(ptr, len, true)
-}
-
-/// Copy kernel bytes into user memory, validating first. Returns false (and
-/// writes nothing) if the destination is not writable user memory.
+/// Copy kernel bytes into process `pid`'s user memory, validating first. Returns
+/// false (and writes nothing) if the destination is not writable user memory.
 ///
-/// This is the single, named gate for kernel→user data movement — the jos
-/// analog of Linux's `copy_to_user` (`access_ok` + the copy). The copy uses
-/// `STTRB`, AArch64's *unprivileged store*: executed at EL1 it performs the
-/// MMU permission check with EL0 rules, exactly as Linux's
-/// `__arch_copy_to_user` does. So even if validation were buggy, the hardware
-/// re-checks every byte — a destination in kernel memory (EL0 no-access) or a
-/// user R-X segment (EL0 read-only) faults loudly (same-EL data abort →
-/// `report_and_halt`) instead of being silently corrupted. On PAN-enabled
-/// kernels (ARMv8.1+; our A72 predates it) the same instructions are also the
-/// only lawful channel to user memory, making this gate hardware-enforced in
-/// both directions. (Linux additionally recovers from such faults via
-/// exception fixup tables rather than halting — a possible later refinement.)
-pub fn copy_to_user(dst: usize, src: &[u8]) -> bool {
-    if !is_user_range_writable(dst, src.len()) {
+/// This is the single, named gate for kernel→user data movement — the jos analog
+/// of Linux's `copy_to_user` (`access_ok` + the copy). The copy uses `STTRB`,
+/// AArch64's *unprivileged store*: executed at EL1 it performs the MMU permission
+/// check with EL0 rules, exactly as Linux's `__arch_copy_to_user` does. So even
+/// if validation were buggy, the hardware re-checks every byte — a destination in
+/// kernel memory (EL0 no-access) or a user R-X segment (EL0 read-only) faults
+/// loudly (same-EL data abort → `report_and_halt`) instead of being silently
+/// corrupted. (Linux additionally recovers from such faults via exception fixup
+/// tables rather than halting — a possible later refinement.)
+///
+/// `STTRB` resolves the destination in the live `TTBR0`, so the caller must
+/// ensure `pid`'s address space is installed (it is, in its syscall context, or
+/// after the poller/`poll_pending` made it live).
+pub fn copy_to_user(pid: usize, dst: usize, src: &[u8]) -> bool {
+    if !process::is_user_range(pid, dst, src.len(), true) {
         return false;
     }
     for (i, &b) in src.iter().enumerate() {
@@ -75,43 +45,18 @@ pub fn copy_to_user(dst: usize, src: &[u8]) -> bool {
     true
 }
 
-fn check_user_range(ptr: usize, len: usize, need_write: bool) -> bool {
-    let end = match ptr.checked_add(len) {
-        Some(e) => e,
-        None => return false,
-    };
-    // The stack is always read/write.
-    if ptr >= USER_STACK_VA && end <= USER_STACK_VA + USER_STACK_SIZE {
-        return true;
-    }
-    let guard = LOADED.lock();
-    if let Some(loaded) = guard.as_ref() {
-        for r in &loaded.ranges[..loaded.count] {
-            if ptr >= r.start && end <= r.end {
-                return !need_write || r.writable;
-            }
-        }
-    }
-    false
-}
-
-/// Load the embedded user ELF, map a user stack, and drop to EL0 at its entry.
-/// Does not return: the kernel runs only via syscalls/IRQs afterward.
+/// ERET into the current process at its entry point. The scheduler has already
+/// installed the process's address space, and `process::create` mapped its
+/// segments and stack. Does not return: the kernel runs only via syscalls/IRQs
+/// afterward, all on this task's kernel stack.
 pub fn enter_user() -> ! {
-    let mut owned = Vec::new();
-    let loaded = elf::load(elf::USER_ELF, &mut owned);
-    let entry = loaded.entry;
-    *LOADED.lock() = Some(loaded);
+    let pid = sched::current_process().expect("enter_user without a process");
+    let entry = process::entry(pid);
+    let user_sp = process::USER_STACK_VA + process::USER_STACK_SIZE;
 
-    // Map a user stack page as EL0 read/write.
-    let stack = alloc_frame().expect("out of frames for the user stack");
-    mmu::map_page(USER_STACK_VA, stack.addr(), PAGE_USER_RW);
-    owned.push((USER_STACK_VA, stack));
-    *USER_FRAMES.lock() = owned;
-    let user_sp = USER_STACK_VA + USER_STACK_SIZE;
-
-    // SAFETY: segments + stack are mapped EL0-accessible; SPSR selects EL0t with
-    // interrupts enabled; ERET transfers to unprivileged execution at `entry`.
+    // SAFETY: segments + stack are mapped EL0-accessible in the live address
+    // space; SPSR selects EL0t with interrupts enabled; ERET transfers to
+    // unprivileged execution at `entry`.
     unsafe {
         asm!(
             "msr spsr_el1, {spsr}",
@@ -126,19 +71,29 @@ pub fn enter_user() -> ! {
     }
 }
 
-/// Reclaim the user program's memory: unmap every page it owned (segments +
-/// stack) and return the frames to the pool. Pointer validation fails closed
-/// afterwards (`LOADED` cleared), and parked ring reads are dropped — their
-/// buffers no longer exist. Shared with exit and fault-kill; the ring page
-/// itself stays (kernel-owned infrastructure, see `ring::setup`).
+/// Reclaim the current process's memory: unmap every page it owned (segments +
+/// stack + ring) and return the frames to the pool. Parked ring reads are
+/// dropped — their buffers no longer exist. Shared with exit and fault-kill.
 pub fn teardown() {
-    crate::ring::abort_user();
-    *LOADED.lock() = None;
-    let owned = core::mem::take(&mut *USER_FRAMES.lock());
+    let pid = sched::current_process().expect("teardown without a process");
+    crate::ring::abort_user(pid);
+    let dead_ttbr0 = process::ttbr0(pid);
+
+    // Unmap and free the program's frames from its own (currently live) space.
+    let owned = process::take_frames(pid);
     let count = owned.len();
     for (va, frame) in owned {
-        mmu::unmap_page(va);
-        free_frame(frame);
+        crate::mmu::unmap_page(va);
+        crate::frames::free_frame(frame);
     }
+
+    // Switch onto the kernel space before reclaiming the dying space's page
+    // tables — we must not free the L0 while it is the live `TTBR0`.
+    crate::mmu::activate(crate::mmu::kernel_ttbr0());
+    // SAFETY: `dead_ttbr0` is this process's space, no longer live and never used
+    // again (the task is about to exit; the husk's `ring_pa` is cleared below).
+    unsafe { crate::mmu::free_address_space(dead_ttbr0) };
+    process::mark_exited(pid);
+
     crate::kprintln!("[user] freed {} frames", count);
 }

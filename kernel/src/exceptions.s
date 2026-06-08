@@ -55,6 +55,8 @@ common_exception:
     mrs     x1, elr_el1
     mrs     x2, spsr_el1
     stp     x1, x2,   [sp, #248]
+    mrs     x3, sp_el0              // EL0 stack pointer: per-task, must survive a
+    str     x3, [sp, #264]          // switch between two EL0 tasks (x3 already saved)
 
     mov     x1, sp                  // x1 = &TrapFrame
     bl      exception_dispatch
@@ -62,6 +64,8 @@ common_exception:
     ldp     x1, x2,   [sp, #248]
     msr     elr_el1, x1
     msr     spsr_el1, x2
+    ldr     x3, [sp, #264]          // restore EL0 stack pointer (x3 not yet reloaded)
+    msr     sp_el0, x3
     ldp     x0, x1,   [sp, #0]
     ldp     x2, x3,   [sp, #16]
     ldp     x4, x5,   [sp, #32]

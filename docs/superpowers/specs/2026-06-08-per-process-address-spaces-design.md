@@ -1,7 +1,7 @@
 # jos — Phase 20: Per-Process Address Spaces + Per-Process Rings (Design)
 
 **Date:** 2026-06-08
-**Status:** Approved design
+**Status:** Implemented
 **Goal:** Give each user program its own address space (its own page tables,
 `TTBR0`-switched on context switch) and its own jring, replacing today's
 singletons (`LOADED`, `USER_FRAMES`, the single ring page + waiter). Bring up

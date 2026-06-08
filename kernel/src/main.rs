@@ -15,6 +15,7 @@ mod input;
 mod irq;
 mod mem;
 mod mmu;
+mod process;
 mod ring;
 mod sched;
 mod syscall;
@@ -53,16 +54,23 @@ pub extern "C" fn kmain() -> ! {
     sched_self_check();
 
     elf_self_check();
-    ring_self_check();
 
     // SQPOLL: a kernel task that polls the submission queue, so published
     // SQEs are consumed without any syscall (it sleeps via NEED_WAKEUP when idle).
     sched::spawn(ring::sqpoll_main, 0);
 
-    // Run the user program as a schedulable task: the ERET to EL0 happens on
-    // its own kernel stack, so its traps land there and it can block like any
-    // other task. kmain stays behind as the idle task.
-    sched::spawn(user_task, 0);
+    // Two processes from the same image, each in its own address space: identical
+    // user VAs backed by different frames and different TTBR0 — isolation by
+    // construction. Process 0 owns the keyboard (foreground); process 1 runs in
+    // the background (its reads park). Each runs as a schedulable task: the ERET
+    // to EL0 is on its own kernel stack, so its traps land there. kmain stays
+    // behind as the idle task.
+    let p0 = process::create(elf::USER_ELF, mmu::new_address_space());
+    process::set_foreground(p0, true);
+    let p1 = process::create(elf::USER_ELF, mmu::new_address_space());
+    process_isolation_self_check(p0, p1);
+    sched::spawn_user(user_task, 0, p0, process::ttbr0(p0));
+    sched::spawn_user(user_task, 0, p1, process::ttbr0(p1));
     loop {
         // SAFETY: wait for an interrupt; any IRQ (timer, UART) wakes us.
         unsafe { core::arch::asm!("wfi", options(nomem, nostack, preserves_flags)) };
@@ -77,50 +85,17 @@ extern "C" fn user_task(_arg: usize) {
     user::enter_user();
 }
 
-/// Exercise the jring path from EL1, acting as the ring's user: set it up via
-/// syscall, publish a NOP + PRINT + bad-opcode batch, submit with one
-/// `SYS_RING_ENTER`, and check the three completions (incl. tag matching).
-fn ring_self_check() {
-    use core::sync::atomic::Ordering;
-
-    // SAFETY: ring syscalls take no pointers from us beyond the SQEs below.
-    let va = unsafe { syscall(syscall::SYS_RING_SETUP, 0, 0) } as usize;
-    assert_eq!(va, abi::USER_RING_VA, "ring page mapped at the wrong VA");
-    // SAFETY: setup just mapped the 4 KiB ring page at this address; the
-    // typed view (all-atomic fields) is how userspace will see it too.
-    let page = unsafe { &*(va as *const abi::RingPage) };
-
-    // Publish three SQEs the way userspace will: write entries, release the tail.
-    let msg = "Hello from the ring!\n";
-    push_sqe(&page.sq[0], abi::OP_NOP, 0, 0, 101);
-    push_sqe(&page.sq[1], abi::OP_PRINT, msg.as_ptr() as u64, msg.len() as u64, 102);
-    push_sqe(&page.sq[2], 99, 0, 0, 103); // invalid opcode -> error completion
-    page.sq_tail.store(3, Ordering::Release);
-
-    // One submission syscall for the whole batch.
-    // SAFETY: the SQEs above are fully written before the tail was published.
-    unsafe { syscall(syscall::SYS_RING_ENTER, 0, 0) };
-
-    // All three ops complete synchronously: expect CQEs (101,0) (102,0) (103,-1).
-    let produced = page.cq_tail.load(Ordering::Acquire);
-    assert_eq!(produced, 3, "expected three completions");
-    for (i, want) in [(101u64, 0i64), (102, 0), (103, -1)].iter().enumerate() {
-        let cqe = &page.cq[i];
-        assert_eq!(cqe.user_data.load(Ordering::Relaxed), want.0, "completion tag mismatch");
-        assert_eq!(cqe.result.load(Ordering::Relaxed), want.1, "completion result mismatch");
-    }
-
-    uart::write_str("ring self-check passed\n");
-}
-
-/// Fill one SQE (submission queue entry) the way userspace does: relaxed
-/// stores, published afterwards by the caller's release of `sq_tail`.
-fn push_sqe(sqe: &abi::Sqe, op: u64, a0: u64, a1: u64, tag: u64) {
-    use core::sync::atomic::Ordering;
-    sqe.opcode.store(op, Ordering::Relaxed);
-    sqe.arg0.store(a0, Ordering::Relaxed);
-    sqe.arg1.store(a1, Ordering::Relaxed);
-    sqe.user_data.store(tag, Ordering::Relaxed);
+/// Prove the two processes are isolated: distinct address-space roots, and the
+/// same user VA (`USER_BASE`, each program's text base) backed by *different*
+/// physical frames. Only separate page tables can do that.
+fn process_isolation_self_check(p0: usize, p1: usize) {
+    let (t0, t1) = (process::ttbr0(p0), process::ttbr0(p1));
+    assert_ne!(t0, t1, "processes share an address-space root");
+    let pa0 = mmu::translate(t0, abi::USER_BASE).expect("p0 USER_BASE unmapped");
+    let pa1 = mmu::translate(t1, abi::USER_BASE).expect("p1 USER_BASE unmapped");
+    assert_ne!(pa0, pa1, "processes share a frame at USER_BASE");
+    kprintln!("process isolation: USER_BASE -> {:#x} (p0) vs {:#x} (p1)", pa0, pa1);
+    uart::write_str("process isolation self-check passed\n");
 }
 
 /// Validate the embedded userspace ELF header before we try to run it.

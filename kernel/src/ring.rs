@@ -1,14 +1,15 @@
-//! `jring`: an io_uring-lite over a shared ring page.
+//! `jring`: an io_uring-lite over a shared ring page, now per process.
 //!
-//! The page layout and all shared constants live in the `abi` crate — the
-//! kernel/userspace contract. This module is the kernel half: it consumes
-//! SQEs (submission queue entries), posts CQEs (completion queue entries),
-//! parks reads until input arrives, hosts the SQPOLL submission-poller task,
-//! and blocks `enter(min_complete)` callers until completions exist.
+//! Each process owns a ring page (a RAM frame). Userspace maps it at
+//! `USER_RING_VA` in its own address space; the kernel reaches the *same frame*
+//! at its physical address via the identity map (`ring_pa`), so it can post
+//! completions to any process's ring under any `TTBR0` — this is what lets an
+//! IRQ complete a parked read for a process that isn't current.
 //!
-//! `NOP`/`PRINT` complete immediately; a `READ` with no buffered input is
-//! parked in a pending table and completed later from the UART receive
-//! interrupt, while user code runs — asynchronous completion, no syscall.
+//! Reading an SQE's *payload* (a print string, a read buffer) is different: those
+//! are user VAs that only resolve in the owner's address space. So the SQPOLL
+//! poller activates a process's space before draining its submissions, and a
+//! syscall's `enter` drains under the trapping process's own (already live) space.
 
 use core::sync::atomic::Ordering;
 
@@ -16,65 +17,35 @@ use abi::{Cqe, RingPage, Sqe, NEED_WAKEUP, OP_NOP, OP_PRINT, OP_READ, RING_ENTRI
 
 use crate::frames::alloc_frame;
 use crate::mmu::{self, PAGE_USER_RW};
+use crate::process::{self, Pending};
+use crate::sched;
 use crate::sync::Locked;
 use crate::uart;
 
-/// Ticks without work before the SQPOLL task goes to sleep (the
-/// `sq_thread_idle` analog).
+/// Ticks without work before the SQPOLL task goes to sleep.
 const SQ_IDLE_TICKS: u64 = 5;
 
 /// CQE result for an invalid pointer, opcode, or a full pending table.
 const ERR: i64 = -1;
 
-/// A parked `READ` awaiting console input.
-#[derive(Clone, Copy)]
-struct Pending {
-    /// User-space destination buffer (virtual address), validated at accept.
-    buf: usize,
-    /// Capacity of that buffer in bytes.
-    len: usize,
-    /// The request's completion tag, echoed in its CQE.
-    user_data: u64,
-}
-
-/// Maximum simultaneously parked reads.
-const MAX_PENDING: usize = 8;
-
+/// Global SQPOLL state — only the poller task index; everything else is per
+/// process now.
 struct RingState {
-    /// Whether the ring page has been mapped (setup is idempotent).
-    mapped: bool,
-    pending: [Option<Pending>; MAX_PENDING],
-    /// Task blocked in `enter` waiting for completions, woken by
-    /// [`poll_pending`]. Kernel-side state on purpose: the user must not be
-    /// able to forge a wake target through the shared page.
-    waiter: Option<usize>,
-    /// The SQPOLL task, woken by `enter` when `NEED_WAKEUP` was set.
+    /// The SQPOLL task, woken by `enter` when a ring's `NEED_WAKEUP` was set.
     poller: Option<usize>,
 }
 
-static RING: Locked<RingState> = Locked::new(RingState {
-    mapped: false,
-    pending: [None; MAX_PENDING],
-    waiter: None,
-    poller: None,
-});
+static RING: Locked<RingState> = Locked::new(RingState { poller: None });
 
-/// The shared ring page, typed. The ONE place in the kernel where the ring's
-/// raw address becomes a reference; sound only after [`setup`] mapped it —
-/// every public entry point is gated on `RingState::mapped`.
+/// A process's ring page, typed, reached at its physical address (identity map).
 ///
-/// HAZARD (per-process address spaces): the kernel dereferences the ring at a
-/// *user* VA (`USER_RING_VA`, in the user L0 slot). This is sound only while a
-/// single global TTBR0 maps that VA for both EL1 and EL0. Once TTBR0 is switched
-/// per process, this breaks: when process B is current, an IRQ completing process
-/// A's parked `READ` cannot reach A's ring through A's user VA. The fix — a
-/// kernel-side alias of the ring in the kernel's L0 slot, plus deciding how
-/// per-process rings are created and mapped — belongs to the per-process step.
-fn page() -> &'static RingPage {
-    // SAFETY: the page is mapped (callers check `mapped`), 4 KiB, and lives
-    // for the rest of the kernel's life; all fields are atomics, so shared
-    // mutation from EL0/IRQ context through &-references is sound.
-    unsafe { &*(USER_RING_VA as *const RingPage) }
+/// # Safety
+/// `ring_pa` must be a live ring frame (a process's `ring_pa`, non-zero). All
+/// fields are atomics, so shared mutation from EL0/IRQ context is sound.
+fn ring(ring_pa: usize) -> &'static RingPage {
+    // SAFETY: `ring_pa` is a 4 KiB ring frame, identity-mapped and live for the
+    // owning process's life; the typed view is all-atomic.
+    unsafe { &*(ring_pa as *const RingPage) }
 }
 
 /// Slot for a free-running index.
@@ -82,10 +53,10 @@ fn slot(index: u32) -> usize {
     (index & RING_MASK) as usize
 }
 
-/// Post a completion: write the CQE, then publish with a release store of the
-/// tail so the user sees the entry before the index moves.
-fn complete(user_data: u64, result: i64) {
-    let p = page();
+/// Post a completion to the ring at `ring_pa`: write the CQE, then publish with a
+/// release store of the tail so the user sees the entry before the index moves.
+fn complete(ring_pa: usize, user_data: u64, result: i64) {
+    let p = ring(ring_pa);
     let tail = p.cq_tail.load(Ordering::Relaxed);
     let head = p.cq_head.load(Ordering::Acquire);
     if tail.wrapping_sub(head) >= RING_ENTRIES {
@@ -98,73 +69,88 @@ fn complete(user_data: u64, result: i64) {
     p.cq_tail.store(tail.wrapping_add(1), Ordering::Release);
 }
 
-/// `SYS_RING_SETUP`: map and zero the ring page (idempotent). Returns its VA.
+/// `SYS_RING_SETUP`: map the calling process's ring page into its address space
+/// (idempotent) and record the frame's PA for kernel-side access. Returns the
+/// ring VA.
 pub fn setup() -> u64 {
-    let mut ring = RING.lock();
-    if !ring.mapped {
-        let frame = alloc_frame().expect("out of frames for the ring page");
-        mmu::map_page(USER_RING_VA, frame.addr(), PAGE_USER_RW);
-        // SAFETY: freshly mapped EL1-writable page; zero it before publishing.
-        unsafe { core::ptr::write_bytes(USER_RING_VA as *mut u8, 0, 4096) };
-        ring.mapped = true;
+    let pid = match sched::current_process() {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    if process::ring_pa(pid) != 0 {
+        return USER_RING_VA as u64; // already set up
     }
+    let frame = alloc_frame().expect("out of frames for the ring page");
+    // SAFETY: a fresh identity-mapped frame; zero it before publishing.
+    unsafe { core::ptr::write_bytes(frame.addr() as *mut u8, 0, 4096) };
+    // Map it EL0-RW into the calling process's space (current = that process).
+    // SAFETY: `ttbr0(pid)` is the live process's root; this user VA is unmapped.
+    unsafe {
+        mmu::map_page_in(mmu::l0_ptr(process::ttbr0(pid)), USER_RING_VA, frame.addr(), PAGE_USER_RW);
+    }
+    process::set_ring(pid, frame);
     USER_RING_VA as u64
 }
 
-/// `SYS_RING_ENTER`: consume all published SQEs, then — like Linux's
-/// `io_uring_enter(min_complete)` — block until the completion queue holds at
-/// least `min_complete` unreaped entries (`0` = submit-only).
-///
-/// Runs with IRQs masked (we are in a syscall), so the drain never races
-/// [`poll_pending`]; IRQs stay masked until the block's `context_switch` lands
-/// in a task that re-enables them, so no completion can slip in between the
-/// recheck and the block (no lost wakeup, single core).
-pub fn enter(from_user: bool, min_complete: u64) -> u64 {
-    if !RING.lock().mapped {
+/// `SYS_RING_ENTER`: consume the calling process's published SQEs, then block
+/// until its completion queue holds at least `min_complete` unreaped entries
+/// (`0` = submit-only). Runs in syscall context, so the process's own space is
+/// live and `drain` can read SQE payloads directly.
+pub fn enter(min_complete: u64) -> u64 {
+    let pid = match sched::current_process() {
+        Some(p) => p,
+        None => return u64::MAX,
+    };
+    let ring_pa = process::ring_pa(pid);
+    if ring_pa == 0 {
         return u64::MAX;
     }
 
-    // The poller went to sleep and a submitter trapped in to revive it: wake
-    // it and clear the flag HERE, not when the poller runs — otherwise every
-    // submit until its next timeslice would see the flag and trap too.
-    if page().flags.load(Ordering::Acquire) & NEED_WAKEUP != 0 {
-        page().flags.store(0, Ordering::Release);
+    // Revive the poller if it slept and we're the submitter that tripped the flag.
+    let pg = ring(ring_pa);
+    if pg.flags.load(Ordering::Acquire) & NEED_WAKEUP != 0 {
+        pg.flags.store(0, Ordering::Release);
         let poller = RING.lock().poller;
         if let Some(p) = poller {
-            crate::sched::wake(p);
+            sched::wake(p);
         }
     }
 
-    drain(from_user);
+    drain(pid);
 
-    // Both indices live in the user-writable page: a hostile user can block
-    // themselves forever or not at all — liveness, never safety.
+    // Both CQ indices live in the user-writable page: a hostile user can block
+    // itself forever or not at all — liveness, never safety.
     loop {
-        let unreaped = page()
+        let unreaped = pg
             .cq_tail
             .load(Ordering::Relaxed)
-            .wrapping_sub(page().cq_head.load(Ordering::Relaxed));
+            .wrapping_sub(pg.cq_head.load(Ordering::Relaxed));
         if u64::from(unreaped) >= min_complete {
             return 0;
         }
-        RING.lock().waiter = Some(crate::sched::current());
-        // Lock dropped before blocking: the waking IRQ path needs it.
-        crate::sched::block_current();
-        // Woken: recheck the condition, never trust a wake.
+        process::set_waiter(pid, sched::current());
+        // Recheck after waking, never trust a wake.
+        sched::block_current();
     }
 }
 
-/// Consume all published SQEs; returns whether any work was done. Runs with
-/// IRQs disabled: it has two callers — the `enter` syscall and the
-/// (preemptible) SQPOLL task — and per-SQE processing must not interleave.
-fn drain(from_user: bool) -> bool {
+/// Consume all of process `pid`'s published SQEs; returns whether any work was
+/// done. IRQs disabled so per-SQE processing doesn't interleave with the timer.
+/// The caller must ensure `pid`'s address space is live (SQE payloads are user
+/// VAs): `enter` runs in the owner's syscall context; the poller activates it.
+fn drain(pid: usize) -> bool {
     let d = crate::irq::disable();
-    let p = page();
+    let ring_pa = process::ring_pa(pid);
+    if ring_pa == 0 {
+        crate::irq::restore(d);
+        return false;
+    }
+    let p = ring(ring_pa);
     let mut head = p.sq_head.load(Ordering::Relaxed);
     let tail = p.sq_tail.load(Ordering::Acquire);
     let worked = head != tail;
     while head != tail {
-        process_sqe(&p.sq[slot(head)], from_user);
+        process_sqe(pid, &p.sq[slot(head)]);
         head = head.wrapping_add(1);
         p.sq_head.store(head, Ordering::Release);
     }
@@ -172,146 +158,195 @@ fn drain(from_user: bool) -> bool {
     worked
 }
 
-/// The SQPOLL task: poll the submission queue so published SQEs are consumed
-/// with no syscall at all. After [`SQ_IDLE_TICKS`] without work it raises
-/// `NEED_WAKEUP` and sleeps; submitters seeing that flag trap once to revive
-/// it (the handshake itself runs through shared memory).
+/// The SQPOLL task: round-robin over every process, draining any with published
+/// submissions so they're consumed with no syscall. Activates a process's
+/// address space before draining it (its SQEs point into that space). After
+/// [`SQ_IDLE_TICKS`] idle it raises `NEED_WAKEUP` on every ring and sleeps;
+/// a submitter seeing the flag traps once via `enter` to revive it.
 pub extern "C" fn sqpoll_main(_arg: usize) {
-    RING.lock().poller = Some(crate::sched::current());
+    RING.lock().poller = Some(sched::current());
     let mut announced = false;
     let mut last_work = crate::timer::ticks();
     loop {
-        if drain(true) {
-            // SQEs always come from EL0 publishes, hence from_user = true.
+        let mut worked = false;
+        for pid in 0..process::count() {
+            if has_submissions(pid) {
+                mmu::activate(process::ttbr0(pid));
+                drain(pid);
+                worked = true;
+            }
+        }
+
+        if worked {
             if !announced {
                 crate::kprintln!("[sqpoll] picked up work");
                 announced = true;
             }
+            set_all_wakeup(false);
             last_work = crate::timer::ticks();
         } else if crate::timer::ticks().wrapping_sub(last_work) >= SQ_IDLE_TICKS {
-            // Going to sleep. Order matters (the lost-wakeup window): raise
-            // the flag FIRST, then drain once more — any SQE published just
-            // before the flag went up is caught here; any published after it
+            // Going to sleep. Raise the flag on every ring FIRST, then re-scan:
+            // any SQE published just before catches here; any published after
             // sees NEED_WAKEUP and traps to wake us.
-            page().flags.store(NEED_WAKEUP, Ordering::Release);
-            if drain(true) {
-                page().flags.store(0, Ordering::Release);
+            set_all_wakeup(true);
+            if (0..process::count()).any(has_submissions) {
+                set_all_wakeup(false);
             } else {
-                crate::sched::block_current();
-                // enter() cleared the flag when it woke us.
+                sched::block_current();
+                // enter() cleared the waking ring's flag; clear the rest.
+                set_all_wakeup(false);
             }
             last_work = crate::timer::ticks();
         }
-        // Single core: give the producer its turn between polls.
-        crate::sched::yield_now();
+        // Single core: give the producers their turn between polls.
+        sched::yield_now();
     }
 }
 
-/// Execute one submission, posting its completion (now, or for a parked
-/// `READ`, later from the UART receive interrupt).
-fn process_sqe(sqe: &Sqe, from_user: bool) {
+/// Whether process `pid` has a non-empty submission queue (peeked via the
+/// identity-mapped ring page, no address-space switch needed to read indices).
+fn has_submissions(pid: usize) -> bool {
+    let ring_pa = process::ring_pa(pid);
+    if ring_pa == 0 {
+        return false;
+    }
+    let p = ring(ring_pa);
+    p.sq_head.load(Ordering::Relaxed) != p.sq_tail.load(Ordering::Acquire)
+}
+
+/// Set or clear `NEED_WAKEUP` on every process's ring.
+fn set_all_wakeup(on: bool) {
+    let flag = if on { NEED_WAKEUP } else { 0 };
+    for pid in 0..process::count() {
+        let ring_pa = process::ring_pa(pid);
+        if ring_pa != 0 {
+            ring(ring_pa).flags.store(flag, Ordering::Release);
+        }
+    }
+}
+
+/// Execute one of process `pid`'s submissions, posting its completion (now, or
+/// for a parked `READ`, later from the UART receive interrupt). The process's
+/// address space is live, so user pointers resolve.
+fn process_sqe(pid: usize, sqe: &Sqe) {
     let opcode = sqe.opcode.load(Ordering::Relaxed);
     let arg0 = sqe.arg0.load(Ordering::Relaxed) as usize;
     let arg1 = sqe.arg1.load(Ordering::Relaxed) as usize;
     let user_data = sqe.user_data.load(Ordering::Relaxed);
+    let ring_pa = process::ring_pa(pid);
 
     match opcode {
-        OP_NOP => complete(user_data, 0),
+        OP_NOP => complete(ring_pa, user_data, 0),
         OP_PRINT => {
-            if from_user && !crate::user::is_user_range(arg0, arg1) {
-                complete(user_data, ERR);
+            if !process::is_user_range(pid, arg0, arg1, false) {
+                complete(ring_pa, user_data, ERR);
                 return;
             }
-            // SAFETY: kernel-trusted, or validated to lie in mapped user memory.
+            // SAFETY: validated to lie in this process's mapped, live user memory.
             let bytes = unsafe { core::slice::from_raw_parts(arg0 as *const u8, arg1) };
             if let Ok(s) = core::str::from_utf8(bytes) {
                 uart::write_str(s);
             }
-            complete(user_data, 0);
+            complete(ring_pa, user_data, 0);
         }
         OP_READ => {
-            if from_user && !crate::user::is_user_range_writable(arg0, arg1) {
-                complete(user_data, ERR);
+            if !process::is_user_range(pid, arg0, arg1, true) {
+                complete(ring_pa, user_data, ERR);
                 return;
             }
             if arg1 == 0 {
-                complete(user_data, 0);
+                complete(ring_pa, user_data, 0);
                 return;
             }
-            // Buffered input completes immediately; otherwise park.
-            let count = drain_input(arg0, arg1);
+            // Buffered input completes immediately, but only for the foreground
+            // process; a background process's read parks (and, today, waits
+            // indefinitely — only the foreground owns the keyboard).
+            let count = if process::foreground_pid() == Some(pid) {
+                drain_input(pid, arg0, arg1)
+            } else {
+                0
+            };
             if count > 0 {
-                complete(user_data, count as i64);
+                complete(ring_pa, user_data, count as i64);
                 return;
             }
-            let mut ring = RING.lock();
-            match ring.pending.iter_mut().find(|s| s.is_none()) {
-                Some(slot) => {
-                    *slot = Some(Pending {
-                        buf: arg0,
-                        len: arg1,
-                        user_data,
-                    })
-                }
-                None => complete(user_data, ERR),
+            if !process::park_read(pid, Pending { buf: arg0, len: arg1, user_data }) {
+                complete(ring_pa, user_data, ERR);
             }
         }
-        _ => complete(user_data, ERR),
+        _ => complete(ring_pa, user_data, ERR),
     }
 }
 
-/// Complete parked reads from the kernel input buffer. Called from the UART RX
-/// interrupt handler (after it drained the device into the buffer) — CQEs land
-/// the moment a key arrives, while user code runs, no syscall involved.
+/// Complete the foreground process's parked reads from the kernel input buffer.
+/// Called from the UART RX interrupt (after it drained the device into the
+/// buffer) — CQEs land the moment a key arrives, while user code runs.
+///
+/// `copy_to_user` writes through the live `TTBR0`, but the interrupted task may
+/// be in any address space (idle, the poller, or the *background* process). So we
+/// temporarily install the foreground space for the copy and restore the prior
+/// one before returning — IRQs are masked here, so nothing preempts between the
+/// two switches. (A page-table-walk copy would avoid the switch entirely; that's
+/// deferred with the rest of I/O multiplexing.)
 pub fn poll_pending() {
-    let mut ring = RING.lock();
-    if !ring.mapped {
-        return; // input can arrive before the ring exists
+    let pid = match process::foreground_pid() {
+        Some(p) => p,
+        None => return,
+    };
+    let ring_pa = process::ring_pa(pid);
+    if ring_pa == 0 {
+        return;
     }
+
+    let prev = mmu::current_ttbr0();
+    let fg = process::ttbr0(pid);
+    if prev != fg {
+        mmu::activate(fg);
+    }
+
     let mut completed = false;
-    for slot in ring.pending.iter_mut() {
+    for (i, slot) in process::pending_snapshot(pid).iter().enumerate() {
         if let Some(p) = *slot {
-            let count = drain_input(p.buf, p.len);
+            let count = drain_input(pid, p.buf, p.len);
             if count > 0 {
-                complete(p.user_data, count as i64);
-                *slot = None;
+                complete(ring_pa, p.user_data, count as i64);
+                process::clear_pending(pid, i);
                 completed = true;
             }
         }
     }
-    // New completions may satisfy a task blocked in `enter`: wake it.
+
+    if prev != fg {
+        mmu::activate(prev);
+    }
+
+    // New completions may satisfy the task blocked in `enter`: wake it.
     if completed {
-        if let Some(waiter) = ring.waiter.take() {
-            crate::sched::wake(waiter);
+        if let Some(waiter) = process::take_waiter(pid) {
+            sched::wake(waiter);
         }
     }
 }
 
-/// Drop all state referencing the (dying) user program: parked reads point at
-/// buffers that are about to be unmapped, and the waiter task is exiting.
-/// Their CQEs are simply never posted — nobody is left to reap them.
-pub fn abort_user() {
+/// Drop process `pid`'s parked reads and waiter at teardown — their buffers are
+/// about to be unmapped, and the waiter task is exiting. Their CQEs are simply
+/// never posted; nobody is left to reap them.
+pub fn abort_user(pid: usize) {
     let d = crate::irq::disable();
-    {
-        let mut ring = RING.lock();
-        ring.pending = [None; MAX_PENDING];
-        ring.waiter = None;
-    }
+    process::clear_ring(pid);
     crate::irq::restore(d);
 }
 
-/// Deliver buffered console input into the user range `[buf, buf+len)` via
-/// `copy_to_user`. The ring layer no longer touches the UART: the driver
-/// (`input.rs`) owns the device, this layer owns the user-facing interface.
-fn drain_input(buf: usize, len: usize) -> usize {
+/// Deliver buffered console input into process `pid`'s user range `[buf, buf+len)`
+/// via `copy_to_user`. The caller ensures `pid`'s space is live.
+fn drain_input(pid: usize, buf: usize, len: usize) -> usize {
     let mut count = 0;
     while count < len {
         match crate::input::pop() {
             Some(b) => {
-                // Validated at SQE-accept time; copy_to_user re-checks (the
-                // Linux access_ok-and-copy shape). A failure here would drop
-                // the byte — defense in depth, not an expected path.
-                if !crate::user::copy_to_user(buf + count, &[b]) {
+                // Validated at SQE-accept time; copy_to_user re-checks (the Linux
+                // access_ok-and-copy shape). A failure here would drop the byte.
+                if !crate::user::copy_to_user(pid, buf + count, &[b]) {
                     break;
                 }
                 count += 1;

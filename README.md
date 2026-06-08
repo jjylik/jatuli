@@ -104,11 +104,10 @@ See `docs/superpowers/specs/` for per-phase design and `docs/superpowers/plans/`
 ## TODO
 
 The process arc (toward ring-native `spawn`, no `fork`):
-- Per-process address spaces: a `Process` owning its page tables, TTBR0-switched on context switch.
-- Process table + per-process state (today's `LOADED`/`USER_FRAMES`/ring waiter are singletons).
-- Multiple userspace programs.
+- Multiple *distinct* embedded programs (today two processes share one image).
 - `OP_SPAWN` ring op returning a process handle; `OP_WAIT` completing on child exit.
-- Decide I/O multiplexing
+- Finish I/O multiplexing: foreground owns the keyboard today; decide fair
+  keystroke routing and whose SQ the poller prioritizes.
 
 Independent polish:
 

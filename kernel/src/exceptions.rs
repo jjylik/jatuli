@@ -27,8 +27,10 @@ pub struct TrapFrame {
     pub elr: u64,
     /// Saved Program Status Register.
     pub spsr: u64,
-    /// Padding to keep the frame 16-byte aligned.
-    pub _pad: u64,
+    /// Saved EL0 stack pointer (`SP_EL0`). Per-task: with more than one EL0 task,
+    /// it must be saved and restored across a context switch, or one task resumes
+    /// on another's user stack. (Also keeps the frame 16-byte aligned.)
+    pub sp_el0: u64,
 }
 
 /// Exception class (`ESR_EL1.EC`) for an AArch64 `SVC`.
