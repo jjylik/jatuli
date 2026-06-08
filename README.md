@@ -2,6 +2,17 @@
 
 A hobby AArch64 kernel for learning kernel basics, run under QEMU.
 
+Monolithic and Linux-idiomatic on the inside, but **ring-native** rather than
+Unix-like on the outside: it borrows Linux's internal mechanisms (the EL0/EL1
+split, ELF loading, the AArch64 syscall convention, preemptive tasks,
+`copy_to_user`, W^X) without Unix's external API — there are no files, no
+signals, and no `fork`. All "action" I/O flows through an io_uring-style shared
+ring (`jring`), and process creation is planned as a ring operation, not a
+syscall. The closest relatives are research systems that kept Unix's structure
+but replaced the syscall surface with shared-memory queues (FlexSC's
+exception-less syscalls; dataplane OSes like Arrakis/IX) — post-Unix, not
+pre-Unix.
+
 ## Prerequisites
 
 - Rust (`rustup target add aarch64-unknown-none`)
@@ -50,7 +61,15 @@ address with the kernel's symbol names.
 
 Brings itself up in stages, each with a self-check printed to the serial console:
 boot → heap → physical frames → MMU → frame-backed heap → exception vectors →
-trap frame + `SVC` syscalls → GICv3 + timer interrupts.
+trap frame + `SVC` syscalls → GICv3 + timer interrupts → preemptive scheduler →
+EL0 userspace via an ELF loader → the `jring` io_uring-lite → `jsh`, a shell
+whose every keystroke and print flows through the ring.
+
+Then it drops into `jsh` (see *Run*). Console input is interrupt-driven into a
+kernel buffer and delivered to userspace via `copy_to_user`; the shell blocks
+in the kernel between keystrokes (no busy-spin), a kernel SQPOLL task can
+consume submissions with no syscall, and a faulting program is killed and its
+memory reclaimed while the kernel keeps running.
 
 ## Layout
 
